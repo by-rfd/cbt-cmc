@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#0666AE" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="icon" type="image/png" href="/assets/aistudio/MTS_AL-MA_SUM_II_7c7dea1b.png" />
+    <link rel="apple-touch-icon" href="/assets/aistudio/MTS_AL-MA_SUM_II_7c7dea1b.png" />
+    <link rel="manifest" href="/manifest.json" />
+    
+    <title>CBT MTs. Al-Ma'sum II Cmc</title>
+    <meta name="description" content="Sistem Ujian Digital CBT Terintegrasi MTs. Al-Ma'sum II Cimuncang - Portal Web Admin/Guru & Simulator Aplikasi Siswa Android (Anti-Cheat)" />
+    <meta property="og:title" content="CBT MTs. Al-Ma'sum II Cmc" />
+    <meta property="og:description" content="Sistem Ujian Digital CBT Terintegrasi MTs. Al-Ma'sum II Cimuncang - Portal Web Admin/Guru & Simulator Aplikasi Siswa Android (Anti-Cheat)" />
+    <meta property="og:type" content="website" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Active Service Worker Unregister & Cache Clear to solve republish caching issues -->
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (let registration of registrations) {
+            registration.unregister();
+            console.log('Service Worker unregistered successfully.');
+          }
+        });
+      }
+      if ('caches' in window) {
+        caches.keys().then((names) => {
+          for (let name of names) {
+            caches.delete(name);
+          }
+          console.log('App cache cleared successfully.');
+        });
+      }
+    </script>
+  </body>
+</html>
+

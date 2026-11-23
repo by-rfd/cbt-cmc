@@ -1,0 +1,22 @@
+{
+  "short_name": "CBT MTs. Al-Ma'sum II Cmc",
+  "name": "CBT MTs. Al-Ma'sum II Cimuncang",
+  "description": "Sistem Ujian Digital CBT Terintegrasi MTs. Al-Ma'sum II Cimuncang dengan Fitur Android Simulator",
+  "icons": [
+    {
+      "src": "/assets/aistudio/MTS_AL-MA_SUM_II_7c7dea1b.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/assets/aistudio/MTS_AL-MA_SUM_II_7c7dea1b.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#ffffff",
+  "theme_color": "#0666AE",
+  "display": "standalone",
+  "orientation": "portrait"
+}

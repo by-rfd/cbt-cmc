@@ -1,0 +1,6 @@
+{
+  "name": "CBT MTs. Al-Ma'sum II Cmc",
+  "description": "Sistem Ujian Digital CBT Terintegrasi MTs. Al-Ma'sum II Cimuncang - Portal Web Admin/Guru & Simulator Aplikasi Siswa Android (Anti-Cheat)",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

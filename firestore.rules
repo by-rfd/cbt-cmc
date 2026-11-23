@@ -1,0 +1,75 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global safety net - Default lock everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Rules for Kelas
+    match /kelas/{kelasId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Kelas Akademik
+    match /kelasAkademik/{kaId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Mapel
+    match /mapel/{mapelId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Siswa
+    match /siswa/{siswaId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Guru
+    match /guru/{guruId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Pengawas
+    match /pengawas/{pengawasId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Jadwal Ngawas (Supervisor rosters)
+    match /jadwalNgawas/{jnId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Soal (Exam Question Bank)
+    match /soal/{soalId} {
+      allow read, write: if true;
+    }
+
+    // Rules for JadwalUjian (Exams timetable)
+    match /jadwalUjian/{jadwalId} {
+      allow read, write: if true;
+    }
+
+    // Rules for TokenUjian (6-digit dynamic keypads)
+    match /tokenUjian/{tokenMapelId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Sessions (Real-time student live tracker)
+    match /sessions/{sessionId} {
+      allow read, write: if true;
+    }
+
+    // Rules for HasilUjian (Exam sheet submissions)
+    match /hasilUjian/{hasilId} {
+      allow read, write: if true;
+    }
+
+    // Rules for Konfigurasi Sekolah
+    match /konfigurasi/sekolah {
+      allow read, write: if true;
+    }
+  }
+}

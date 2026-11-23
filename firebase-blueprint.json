@@ -1,0 +1,208 @@
+{
+  "entities": {
+    "Kelas": {
+      "title": "Kelas",
+      "description": "Data kelas dan jurusan sekolah",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nama": { "type": "string" },
+        "jurusan": { "type": "string" }
+      },
+      "required": ["id", "nama", "jurusan"]
+    },
+    "Mapel": {
+      "title": "Mapel",
+      "description": "Data mata pelajaran",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nama": { "type": "string" },
+        "kode": { "type": "string" }
+      },
+      "required": ["id", "nama", "kode"]
+    },
+    "Siswa": {
+      "title": "Siswa",
+      "description": "Data siswa peserta ujian",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nama": { "type": "string" },
+        "nisn": { "type": "string" },
+        "username": { "type": "string" },
+        "kelasId": { "type": "string" }
+      },
+      "required": ["id", "nama", "nisn", "username", "kelasId"]
+    },
+    "Guru": {
+      "title": "Guru",
+      "description": "Data guru pengampu mata pelajaran",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nama": { "type": "string" },
+        "nip": { "type": "string" },
+        "username": { "type": "string" },
+        "mapelIds": { "type": "array" },
+        "mapelKelas": { "type": "array" }
+      },
+      "required": ["id", "nama", "nip", "username", "mapelIds"]
+    },
+    "Soal": {
+      "title": "Soal",
+      "description": "Data soal pilihan ganda",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mapelId": { "type": "string" },
+        "teks": { "type": "string" },
+        "gambarUrl": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "opsi": { "type": "object" },
+        "opsiGambar": { "type": "object" },
+        "kunci": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "guruId": { "type": "string" },
+        "kelasIds": { "type": "array" }
+      },
+      "required": ["id", "mapelId", "teks", "opsi", "kunci"]
+    },
+    "JadwalUjian": {
+      "title": "JadwalUjian",
+      "description": "Jadwal pelaksanaan ujian digital",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mapelId": { "type": "string" },
+        "kelasIds": { "type": "array" },
+        "tanggal": { "type": "string" },
+        "jamMulai": { "type": "string" },
+        "jamSelesai": { "type": "string" },
+        "acakSoal": { "type": "boolean" },
+        "durasiMenit": { "type": "number" },
+        "guruIds": { "type": "array" },
+        "soalIds": { "type": "array" }
+      },
+      "required": ["id", "mapelId", "kelasIds", "tanggal", "jamMulai", "jamSelesai", "durasiMenit"]
+    },
+    "TokenUjian": {
+      "title": "TokenUjian",
+      "description": "Token 6 digit ujian yang terotasi otomatis",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mapelNama": { "type": "string" },
+        "token": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "expiresAt": { "type": "number" }
+      },
+      "required": ["id", "mapelNama", "token", "createdAt", "expiresAt"]
+    },
+    "SesiSiswa": {
+      "title": "SesiSiswa",
+      "description": "Live tracking status pengerjaan siswa untuk real-time monitoring",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "siswaNama": { "type": "string" },
+        "siswaKelas": { "type": "string" },
+        "mapelNama": { "type": "string" },
+        "mapelId": { "type": "string" },
+        "jadwalId": { "type": "string" },
+        "questionIds": { "type": "array" },
+        "status": { "type": "string", "enum": ["Belum Mulai", "Mengerjakan", "Selesai", "Diskualifikasi"] },
+        "deviceId": { "type": "string" },
+        "pelanggaranCount": { "type": "number" },
+        "pelanggaranLogs": { "type": "array" },
+        "jawabanTerisi": { "type": "number" },
+        "totalSoal": { "type": "number" },
+        "raguRagu": { "type": "object" },
+        "jawabanSiswa": { "type": "object" },
+        "lastUpdated": { "type": "string" }
+      },
+      "required": ["id", "siswaNama", "siswaKelas", "mapelNama", "status", "pelanggaranCount"]
+    },
+    "HasilUjian": {
+      "title": "HasilUjian",
+      "description": "Output nilai pengerjaan ujian siswa",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "siswaNisn": { "type": "string" },
+        "siswaNama": { "type": "string" },
+        "siswaKelas": { "type": "string" },
+        "mapelId": { "type": "string" },
+        "mapelNama": { "type": "string" },
+        "totalSoal": { "type": "number" },
+        "salah": { "type": "number" },
+        "benar": { "type": "number" },
+        "nilai": { "type": "number" },
+        "tanggalSelesai": { "type": "string" },
+        "status": { "type": "string", "enum": ["Selesai", "Diskualifikasi"] }
+      },
+      "required": ["id", "siswaNama", "siswaKelas", "mapelNama", "nilai", "status"]
+    },
+    "KonfigurasiSekolah": {
+      "title": "KonfigurasiSekolah",
+      "description": "Informasi profile sekolah dan limitasi kecurangan",
+      "type": "object",
+      "properties": {
+        "namaSekolah": { "type": "string" },
+        "alamatSekolah": { "type": "string" },
+        "kodeRegistrasi": { "type": "string" },
+        "logoKiriUrl": { "type": "string" },
+        "logoKananUrl": { "type": "string" },
+        "bgUrl": { "type": "string" },
+        "ttdKepsekUrl": { "type": "string" },
+        "stempelSekolahUrl": { "type": "string" },
+        "namaKepsek": { "type": "string" },
+        "nipKepsek": { "type": "string" },
+        "zonaWaktu": { "type": "string", "enum": ["WIB", "WITA", "WIT"] },
+        "batasPelanggaran": { "type": "number" }
+      },
+      "required": ["namaSekolah", "alamatSekolah", "batasPelanggaran"]
+    }
+  },
+  "firestore": {
+    "/kelas/{kelasId}": {
+      "schema": "Kelas",
+      "description": "Koleksi data kelas"
+    },
+    "/mapel/{mapelId}": {
+      "schema": "Mapel",
+      "description": "Koleksi data mata pelajaran"
+    },
+    "/siswa/{siswaId}": {
+      "schema": "Siswa",
+      "description": "Koleksi data siswa"
+    },
+    "/guru/{guruId}": {
+      "schema": "Guru",
+      "description": "Koleksi data guru"
+    },
+    "/soal/{soalId}": {
+      "schema": "Soal",
+      "description": "Koleksi data bank soal"
+    },
+    "/jadwalUjian/{jadwalId}": {
+      "schema": "JadwalUjian",
+      "description": "Koleksi jadwal pelaksanaan ujian"
+    },
+    "/tokenUjian/{tokenMapelId}": {
+      "schema": "TokenUjian",
+      "description": "Koleksi token ujian real-time per mapel"
+    },
+    "/sessions/{sessionId}": {
+      "schema": "SesiSiswa",
+      "description": "Koleksi real-time monitoring sesi pengerjaan siswa"
+    },
+    "/hasilUjian/{hasilId}": {
+      "schema": "HasilUjian",
+      "description": "Koleksi hasil rekap nilai siswa"
+    },
+    "/konfigurasi/sekolah": {
+      "schema": "KonfigurasiSekolah",
+      "description": "Data single dokumen konfigurasi sekolah"
+    }
+  }
+}
