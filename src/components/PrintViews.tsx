@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import jsPDF from "jspdf";
-import html2canvas from "html2canvas";
 import QRCode from "qrcode";
 import { Siswa, Kelas, KelasAkademik, KonfigurasiSekolah, Mapel, Pengawas } from "../types";
 import {
@@ -91,6 +90,80 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 // ----------------------------------------------------------------------------
+// HELPER: Safe Image-to-PNG loader & Native Vector jsPDF Utilities
+// ----------------------------------------------------------------------------
+interface LoadedPdfImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+async function loadImageAsPngDataUrl(src?: string): Promise<LoadedPdfImage | null> {
+  const url = (src || "").trim();
+  if (!url) return null;
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    const isDataUrl = url.startsWith("data:");
+    if (!isDataUrl) {
+      img.crossOrigin = "anonymous";
+    }
+    const timer = window.setTimeout(() => resolve(null), 4000);
+
+    img.onload = () => {
+      window.clearTimeout(timer);
+      try {
+        const w = img.naturalWidth || img.width || 128;
+        const h = img.naturalHeight || img.height || 128;
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: canvas.toDataURL("image/png"), width: w, height: h });
+      } catch {
+        resolve(null);
+      }
+    };
+
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      resolve(null);
+    };
+
+    img.src = url;
+  });
+}
+
+function fitPdfText(pdf: jsPDF, text: string, maxWidthMm: number): string {
+  const raw = String(text || "");
+  if (!raw || pdf.getTextWidth(raw) <= maxWidthMm) return raw;
+  let trimmed = raw;
+  while (trimmed.length > 1 && pdf.getTextWidth(`${trimmed}...`) > maxWidthMm) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return `${trimmed}...`;
+}
+
+function triggerPdfBlobDownload(pdf: jsPDF, fileName: string): string {
+  const blob = pdf.output("blob");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  a.rel = "noopener";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  return url;
+}
+
+// ----------------------------------------------------------------------------
 // PRINT CARDS COMPONENT (A4 - 8 KARTU ATAU 10 KARTU PER HALAMAN)
 // ----------------------------------------------------------------------------
 interface PrintCardsProps {
@@ -122,10 +195,31 @@ export function PrintCards({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     return new Set(siswaList.map((s) => s.id));
   });
+  const hasAutoSyncedRef = useRef<boolean>(siswaList.length > 0);
 
-  // PDF Generation progress
+  useEffect(() => {
+    if (!hasAutoSyncedRef.current && siswaList.length > 0) {
+      hasAutoSyncedRef.current = true;
+      setSelectedIds(new Set(siswaList.map((s) => s.id)));
+    }
+  }, [siswaList]);
+
+  // PDF Generation & status feedback
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<string>("");
+  const [printFeedback, setPrintFeedback] = useState<{
+    type: "error" | "info" | "success";
+    text: string;
+    downloadUrl?: string;
+    fileName?: string;
+  } | null>(null);
+  const pdfUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current);
+    };
+  }, []);
 
   // Get all unique class names across data
   const availableClasses = useMemo(() => {
@@ -212,22 +306,23 @@ export function PrintCards({
     setSelectedIds(new Set());
   };
 
-  // Direct A4 PDF Generation using jsPDF & html2canvas
+  // Direct Native Vector A4 PDF Generation using jsPDF & QRCode
   const handleDownloadPDF = async () => {
+    setPrintFeedback(null);
     if (printableSiswa.length === 0) {
-      alert("Pilih minimal 1 siswa untuk membuat PDF Kartu Ujian.");
+      setPrintFeedback({ type: "error", text: "Pilih minimal 1 siswa terlebih dahulu untuk membuat PDF Kartu Ujian." });
       return;
     }
 
-    if (!printAreaRef.current) return;
-    const pageNodes = printAreaRef.current.querySelectorAll<HTMLElement>(".a4-sheet-container");
-    if (!pageNodes || pageNodes.length === 0) return;
-
     try {
       setIsExportingPdf(true);
-      const totalPages = pageNodes.length;
+      setExportProgress("Menyiapkan logo & dokumen...");
 
-      // Create PDF in A4 portrait (210 x 297 mm)
+      const [logoKiri, logoKanan] = await Promise.all([
+        loadImageAsPngDataUrl(konfig.logoKiriUrl),
+        loadImageAsPngDataUrl(konfig.logoKananUrl),
+      ]);
+
       const pdf = new jsPDF({
         orientation: "portrait",
         unit: "mm",
@@ -235,32 +330,314 @@ export function PrintCards({
         compress: true,
       });
 
-      for (let i = 0; i < totalPages; i++) {
-        setExportProgress(`Memproses Lembar ${i + 1} dari ${totalPages}...`);
-        const pageEl = pageNodes[i];
+      const schoolName = (konfig.namaSekolah || "MTs. AL-MA'SUM II CIMUNCANG").toUpperCase();
+      const marginX = 6;
+      const marginY = 7;
+      const colGap = 3;
+      const rowGap = cardsPerPage === 8 ? 3 : 2.2;
+      const cardW = (210 - marginX * 2 - colGap) / 2; // 97.5 mm
+      const cardH = cardsPerPage === 8 ? 67 : 54.5;
+      const totalPages = pages.length;
 
-        const canvas = await html2canvas(pageEl, {
-          scale: 2, // 2x scale for sharp text and QR codes
-          useCORS: true,
-          logging: false,
-          backgroundColor: "#ffffff",
-          windowWidth: 1024,
-        });
-
-        const imgData = canvas.toDataURL("image/jpeg", 0.95);
-        if (i > 0) {
+      for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
+        setExportProgress(`Memproses Lembar ${pageIdx + 1} dari ${totalPages}...`);
+        if (pageIdx > 0) {
           pdf.addPage("a4", "portrait");
         }
-        pdf.addImage(imgData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
+
+        const pageSiswa = pages[pageIdx];
+
+        for (let cardIdx = 0; cardIdx < pageSiswa.length; cardIdx++) {
+          const siswa = pageSiswa[cardIdx];
+          const col = cardIdx % 2;
+          const row = Math.floor(cardIdx / 2);
+          const x = marginX + col * (cardW + colGap);
+          const y = marginY + row * (cardH + rowGap);
+
+          // Card background & dashed cutting border
+          pdf.setFillColor(255, 255, 255);
+          pdf.setDrawColor(148, 163, 184);
+          pdf.setLineWidth(0.3);
+          pdf.setLineDashPattern([1.2, 1.2], 0);
+          pdf.roundedRect(x, y, cardW, cardH, 2, 2, "FD");
+          pdf.setLineDashPattern([], 0);
+
+          const kelasDisplay = siswa.kelas || getKelasNama(siswa.kelasId);
+          const credentials = JSON.stringify({
+            u: siswa.username,
+            p: siswa.password || "Password123",
+          });
+          const qrDataUrl = await QRCode.toDataURL(credentials, {
+            width: 240,
+            margin: 1,
+            errorCorrectionLevel: "M",
+            color: { dark: "#0f172a", light: "#ffffff" },
+          });
+
+          if (cardsPerPage === 8) {
+            // Header Kop (8 cards/page)
+            const logoSize = 7;
+            if (logoKiri) {
+              pdf.addImage(logoKiri.dataUrl, "PNG", x + 2.5, y + 2, logoSize, logoSize);
+            } else {
+              pdf.setFillColor(224, 242, 254);
+              pdf.roundedRect(x + 2.5, y + 2, logoSize, logoSize, 1, 1, "F");
+              pdf.setFont("helvetica", "bold");
+              pdf.setFontSize(6.5);
+              pdf.setTextColor(6, 102, 174);
+              pdf.text("MTs", x + 6, y + 6.3, { align: "center" });
+            }
+            if (logoKanan) {
+              pdf.addImage(logoKanan.dataUrl, "PNG", x + cardW - 2.5 - logoSize, y + 2, logoSize, logoSize);
+            }
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(30, 41, 59);
+            pdf.text(fitPdfText(pdf, schoolName, cardW - 22), x + cardW / 2, y + 5, { align: "center" });
+
+            pdf.setFontSize(6.5);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text("KARTU PESERTA ASESMEN / UJIAN CBT", x + cardW / 2, y + 8.3, { align: "center" });
+
+            pdf.setDrawColor(226, 232, 240);
+            pdf.setLineWidth(0.25);
+            pdf.line(x + 2.5, y + 10.5, x + cardW - 2.5, y + 10.5);
+
+            // QR Code box
+            const qrBoxX = x + 3;
+            const qrBoxY = y + 14;
+            const qrBoxW = 22.5;
+            const qrBoxH = 26;
+            pdf.setFillColor(248, 250, 252);
+            pdf.setDrawColor(226, 232, 240);
+            pdf.roundedRect(qrBoxX, qrBoxY, qrBoxW, qrBoxH, 1.5, 1.5, "FD");
+            pdf.addImage(qrDataUrl, "PNG", qrBoxX + 1.75, qrBoxY + 1.5, 19, 19);
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5.5);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text("SCAN LOGIN", qrBoxX + qrBoxW / 2, qrBoxY + 23.8, { align: "center" });
+
+            // Biodata
+            const bioX = x + 28;
+            const bioW = cardW - 31;
+            let bioY = y + 15.5;
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5.5);
+            pdf.setTextColor(148, 163, 184);
+            pdf.text("NAMA LENGKAP", bioX, bioY);
+            bioY += 3.8;
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(9);
+            pdf.setTextColor(15, 23, 42);
+            pdf.text(fitPdfText(pdf, siswa.nama || "-", bioW), bioX, bioY);
+            bioY += 5.5;
+
+            // NISN + KELAS
+            const halfW = bioW / 2 - 1;
+            pdf.setFontSize(5.5);
+            pdf.setTextColor(148, 163, 184);
+            pdf.text("NISN", bioX, bioY);
+            pdf.text("KELAS", bioX + halfW + 2, bioY);
+            bioY += 3.3;
+
+            pdf.setFont("courier", "bold");
+            pdf.setFontSize(8);
+            pdf.setTextColor(30, 41, 59);
+            pdf.text(fitPdfText(pdf, siswa.nisn || "-", halfW), bioX, bioY);
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(8);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text(fitPdfText(pdf, kelasDisplay, halfW), bioX + halfW + 2, bioY);
+            bioY += 4.8;
+
+            if (siswa.noPeserta) {
+              pdf.setFont("helvetica", "bold");
+              pdf.setFontSize(5.5);
+              pdf.setTextColor(148, 163, 184);
+              pdf.text("NO. PESERTA", bioX, bioY);
+              bioY += 3.2;
+
+              pdf.setFont("courier", "bold");
+              pdf.setFontSize(7.5);
+              pdf.setTextColor(51, 65, 85);
+              pdf.text(fitPdfText(pdf, siswa.noPeserta, bioW), bioX, bioY);
+              bioY += 4.2;
+            } else {
+              bioY += 1.5;
+            }
+
+            // Credentials Boxes
+            const credY = Math.max(bioY, y + 46);
+            const credBoxW = (bioW - 2) / 2;
+            const credBoxH = 9.5;
+
+            pdf.setFillColor(240, 249, 255);
+            pdf.setDrawColor(224, 242, 254);
+            pdf.roundedRect(bioX, credY, credBoxW, credBoxH, 1, 1, "FD");
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5.2);
+            pdf.setTextColor(3, 105, 161);
+            pdf.text("USER", bioX + 1.5, credY + 3.2);
+            pdf.setFont("courier", "bold");
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text(fitPdfText(pdf, siswa.username || "-", credBoxW - 3), bioX + 1.5, credY + 7.2);
+
+            const passBoxX = bioX + credBoxW + 2;
+            pdf.setFillColor(241, 245, 249);
+            pdf.setDrawColor(226, 232, 240);
+            pdf.roundedRect(passBoxX, credY, credBoxW, credBoxH, 1, 1, "FD");
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5.2);
+            pdf.setTextColor(100, 116, 139);
+            pdf.text("PASS", passBoxX + 1.5, credY + 3.2);
+            pdf.setFont("courier", "bold");
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(30, 41, 59);
+            pdf.text(fitPdfText(pdf, siswa.password || "Password123", credBoxW - 3), passBoxX + 1.5, credY + 7.2);
+
+            // Footer
+            pdf.setDrawColor(226, 232, 240);
+            pdf.line(x + 2.5, y + cardH - 5.5, x + cardW - 2.5, y + cardH - 5.5);
+            pdf.setFont("helvetica", "italic");
+            pdf.setFontSize(5.5);
+            pdf.setTextColor(148, 163, 184);
+            pdf.text(
+              "Simpan kartu ujian ini baik-baik selama pelaksanaan ujian berlangsung.",
+              x + cardW / 2,
+              y + cardH - 2.3,
+              { align: "center" }
+            );
+          } else {
+            // Compact 10 cards/page layout
+            const logoSize = 5.5;
+            if (logoKiri) {
+              pdf.addImage(logoKiri.dataUrl, "PNG", x + 2.2, y + 1.6, logoSize, logoSize);
+            }
+            if (logoKanan) {
+              pdf.addImage(logoKanan.dataUrl, "PNG", x + cardW - 2.2 - logoSize, y + 1.6, logoSize, logoSize);
+            }
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(7);
+            pdf.setTextColor(30, 41, 59);
+            pdf.text(fitPdfText(pdf, schoolName, cardW - 18), x + cardW / 2, y + 4.2, { align: "center" });
+
+            pdf.setFontSize(6);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text("KARTU PESERTA UJIAN CBT", x + cardW / 2, y + 7.1, { align: "center" });
+
+            pdf.setDrawColor(226, 232, 240);
+            pdf.setLineWidth(0.2);
+            pdf.line(x + 2.2, y + 8.5, x + cardW - 2.2, y + 8.5);
+
+            // Mini QR Box
+            const qrBoxX = x + 2.5;
+            const qrBoxY = y + 11;
+            const qrBoxW = 18;
+            const qrBoxH = 21;
+            pdf.setFillColor(248, 250, 252);
+            pdf.setDrawColor(226, 232, 240);
+            pdf.roundedRect(qrBoxX, qrBoxY, qrBoxW, qrBoxH, 1, 1, "FD");
+            pdf.addImage(qrDataUrl, "PNG", qrBoxX + 1.25, qrBoxY + 1, 15.5, 15.5);
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text("SCAN", qrBoxX + qrBoxW / 2, qrBoxY + 19.2, { align: "center" });
+
+            // Mini Biodata
+            const bioX = x + 22.8;
+            const bioW = cardW - 25.3;
+            let bioY = y + 14;
+
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(8.2);
+            pdf.setTextColor(15, 23, 42);
+            pdf.text(fitPdfText(pdf, siswa.nama || "-", bioW), bioX, bioY);
+            bioY += 4;
+
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(6.8);
+            pdf.setTextColor(71, 85, 105);
+            pdf.text(fitPdfText(pdf, `NISN: ${siswa.nisn || "-"} • ${kelasDisplay}`, bioW), bioX, bioY);
+            bioY += 3.8;
+
+            if (siswa.noPeserta) {
+              pdf.setFont("courier", "bold");
+              pdf.setFontSize(6.5);
+              pdf.setTextColor(100, 116, 139);
+              pdf.text(fitPdfText(pdf, `No: ${siswa.noPeserta}`, bioW), bioX, bioY);
+              bioY += 3.5;
+            }
+
+            const credY = Math.max(bioY + 1, y + 34.5);
+            const credBoxW = (bioW - 1.5) / 2;
+            const credBoxH = 8.5;
+
+            pdf.setFillColor(240, 249, 255);
+            pdf.setDrawColor(224, 242, 254);
+            pdf.roundedRect(bioX, credY, credBoxW, credBoxH, 1, 1, "FD");
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5);
+            pdf.setTextColor(3, 105, 161);
+            pdf.text("U:", bioX + 1.2, credY + 2.8);
+            pdf.setFont("courier", "bold");
+            pdf.setFontSize(7);
+            pdf.setTextColor(6, 102, 174);
+            pdf.text(fitPdfText(pdf, siswa.username || "-", credBoxW - 2.4), bioX + 1.2, credY + 6.6);
+
+            const passBoxX = bioX + credBoxW + 1.5;
+            pdf.setFillColor(241, 245, 249);
+            pdf.setDrawColor(226, 232, 240);
+            pdf.roundedRect(passBoxX, credY, credBoxW, credBoxH, 1, 1, "FD");
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(5);
+            pdf.setTextColor(100, 116, 139);
+            pdf.text("P:", passBoxX + 1.2, credY + 2.8);
+            pdf.setFont("courier", "bold");
+            pdf.setFontSize(7);
+            pdf.setTextColor(30, 41, 59);
+            pdf.text(fitPdfText(pdf, siswa.password || "Password123", credBoxW - 2.4), passBoxX + 1.2, credY + 6.6);
+
+            // Mini Footer
+            pdf.setDrawColor(226, 232, 240);
+            pdf.line(x + 2.2, y + cardH - 4.5, x + cardW - 2.2, y + cardH - 4.5);
+            pdf.setFont("helvetica", "italic");
+            pdf.setFontSize(5.2);
+            pdf.setTextColor(148, 163, 184);
+            pdf.text(
+              "Harap menjaga kartu ini hingga seluruh sesi ujian selesai.",
+              x + cardW / 2,
+              y + cardH - 1.8,
+              { align: "center" }
+            );
+          }
+        }
       }
 
       const kelasLabel = selectedKelas === "all" ? "Semua_Kelas" : selectedKelas.replace(/\s+/g, "_");
       const fileName = `Kartu_Ujian_A4_${cardsPerPage}Kartu_${kelasLabel}_${new Date().toISOString().split("T")[0]}.pdf`;
-      pdf.save(fileName);
+      if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current);
+      const blobUrl = triggerPdfBlobDownload(pdf, fileName);
+      pdfUrlRef.current = blobUrl;
+
       setExportProgress("Selesai!");
-    } catch (err) {
+      setPrintFeedback({
+        type: "success",
+        text: `File PDF (${totalPages} lembar A4) berhasil dibuat:`,
+        downloadUrl: blobUrl,
+        fileName,
+      });
+    } catch (err: any) {
       console.error("Gagal export PDF:", err);
-      alert("Terjadi kendala saat membuat file PDF. Silakan coba gunakan tombol Cetak Browser (Simpan sebagai PDF).");
+      setPrintFeedback({
+        type: "error",
+        text: `Gagal membuat PDF (${err?.message || "kesalahan internal"}). Coba gunakan tombol Cetak / Simpan PDF.`,
+      });
     } finally {
       setIsExportingPdf(false);
       setExportProgress("");
@@ -269,19 +646,32 @@ export function PrintCards({
 
   // Native Browser Print (A4 with exact CSS rules)
   const handleBrowserPrint = () => {
+    setPrintFeedback(null);
     if (printableSiswa.length === 0) {
-      alert("Pilih minimal 1 siswa untuk mencetak kartu ujian.");
+      setPrintFeedback({ type: "error", text: "Pilih minimal 1 siswa untuk mencetak kartu ujian." });
       return;
     }
-    // Switch to preview tab so print nodes are active in DOM
     setActiveTab("preview");
     setTimeout(() => {
-      window.print();
-    }, 150);
+      try {
+        window.print();
+        if (window.self !== window.top) {
+          setPrintFeedback({
+            type: "info",
+            text: "Jika dialog cetak browser tidak muncul di mode preview, gunakan tombol hijau Unduh File PDF.",
+          });
+        }
+      } catch {
+        setPrintFeedback({
+          type: "info",
+          text: "Browser memblokir dialog cetak. Silakan gunakan tombol hijau Unduh File PDF.",
+        });
+      }
+    }, 200);
   };
 
   return (
-    <div id="print-modal-portal" className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-start p-2 sm:p-4 overflow-hidden">
+    <div id="print-modal-portal" className="fixed inset-0 z-[100] bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-start p-2 sm:p-4 overflow-hidden">
       {/* Print CSS Injection */}
       <style>{`
         @media print {
@@ -289,9 +679,15 @@ export function PrintCards({
             size: A4 portrait;
             margin: 6mm 6mm 6mm 6mm;
           }
-          body {
-            visibility: hidden !important;
+          html, body {
+            height: auto !important;
+            overflow: visible !important;
+            margin: 0 !important;
+            padding: 0 !important;
             background: white !important;
+          }
+          body * {
+            visibility: hidden !important;
           }
           #print-modal-portal, #print-modal-portal * {
             visibility: visible !important;
@@ -301,18 +697,37 @@ export function PrintCards({
             left: 0 !important;
             top: 0 !important;
             width: 100% !important;
+            height: auto !important;
             background: white !important;
             padding: 0 !important;
             margin: 0 !important;
             overflow: visible !important;
+            display: block !important;
+          }
+          .print-modal-shell,
+          .print-modal-scroll,
+          .print-sheets-wrapper {
+            position: static !important;
+            width: 100% !important;
+            max-width: none !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            display: block !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            background: white !important;
           }
           .no-print {
             display: none !important;
           }
           .a4-sheet-container {
-            width: 200mm !important;
-            min-height: 285mm !important;
-            max-height: 285mm !important;
+            width: 198mm !important;
+            min-height: 284mm !important;
+            max-height: 284mm !important;
             margin: 0 auto !important;
             padding: 0 !important;
             page-break-after: always !important;
@@ -323,11 +738,15 @@ export function PrintCards({
             border: none !important;
             background: white !important;
           }
+          .a4-sheet-container:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
         }
       `}</style>
 
       {/* Main Container */}
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[96vh] flex flex-col overflow-hidden border border-slate-200">
+      <div className="print-modal-shell bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[96vh] flex flex-col overflow-hidden border border-slate-200">
         {/* Top Header Bar */}
         <div className="no-print p-4 bg-gradient-to-r from-[#0666AE] to-[#044a80] text-white flex flex-wrap justify-between items-center gap-3 border-b border-sky-800">
           <div className="flex items-center gap-3">
@@ -529,8 +948,41 @@ export function PrintCards({
           </div>
         </div>
 
+        {printFeedback && (
+          <div
+            className={`no-print px-4 py-2 text-xs font-bold flex flex-wrap items-center justify-between gap-2 border-b ${
+              printFeedback.type === "error"
+                ? "bg-rose-50 text-rose-800 border-rose-200"
+                : printFeedback.type === "success"
+                ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                : "bg-amber-50 text-amber-800 border-amber-200"
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span>{printFeedback.text}</span>
+              {printFeedback.downloadUrl && printFeedback.fileName && (
+                <a
+                  href={printFeedback.downloadUrl}
+                  download={printFeedback.fileName}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-extrabold underline-offset-2"
+                >
+                  <Download size={12} />
+                  <span>Simpan {printFeedback.fileName}</span>
+                </a>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setPrintFeedback(null)}
+              className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {/* Modal Body: Switch between Selection View and A4 Preview */}
-        <div className="flex-1 overflow-y-auto bg-slate-200/70 p-3 sm:p-6 text-slate-800">
+        <div className="print-modal-scroll flex-1 overflow-y-auto bg-slate-200/70 p-3 sm:p-6 text-slate-800">
           {/* TAB 1: SELECTION CHECKLIST TABLE */}
           {activeTab === "selection" && (
             <div className="no-print max-w-4xl mx-auto bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -633,7 +1085,7 @@ export function PrintCards({
           {/* TAB 2: A4 PRINT PREVIEW (EXACT A4 SHEETS) */}
           <div
             ref={printAreaRef}
-            className={`${activeTab === "selection" ? "hidden" : "flex"} flex-col items-center gap-8`}
+            className={`print-sheets-wrapper ${activeTab === "selection" ? "hidden" : "flex"} flex-col items-center gap-8`}
           >
             {pages.length === 0 ? (
               <div className="bg-white p-12 rounded-2xl shadow-sm text-center max-w-md mx-auto my-8 border border-slate-200">
@@ -700,7 +1152,7 @@ export function PrintCards({
                               pageBreakInside: "avoid",
                               breakInside: "avoid",
                             }}
-                            className="border border-dashed border-slate-350 rounded-xl p-2.5 bg-white relative flex flex-col justify-between shadow-2xs hover:border-[#0666AE]/60 transition"
+                            className="border border-dashed border-slate-300 rounded-xl p-2.5 bg-white relative flex flex-col justify-between shadow-2xs hover:border-[#0666AE]/60 transition"
                           >
                             {/* Cutting guide icon indicator */}
                             <div className="absolute -top-1.5 -left-1.5 text-slate-400 select-none">
@@ -815,7 +1267,7 @@ export function PrintCards({
                             </div>
 
                             {/* Card Footer */}
-                            <div className="pt-0.5 border-t border-slate-150 text-[7px] text-slate-400 text-center italic leading-tight">
+                            <div className="pt-0.5 border-t border-slate-200 text-[7px] text-slate-400 text-center italic leading-tight">
                               Simpan kartu ujian ini baik-baik selama pelaksanaan ujian berlangsung.
                             </div>
                           </div>
@@ -832,7 +1284,7 @@ export function PrintCards({
                             pageBreakInside: "avoid",
                             breakInside: "avoid",
                           }}
-                          className="border border-dashed border-slate-350 rounded-lg p-2 bg-white relative flex flex-col justify-between shadow-2xs hover:border-[#0666AE]/60 transition"
+                          className="border border-dashed border-slate-300 rounded-lg p-2 bg-white relative flex flex-col justify-between shadow-2xs hover:border-[#0666AE]/60 transition"
                         >
                           {/* Cutting guide icon indicator */}
                           <div className="absolute -top-1.5 -left-1.5 text-slate-400 select-none">
@@ -982,10 +1434,31 @@ export function PrintBeritaAcara({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => {
     return new Set(siswaList.map((s) => s.id));
   });
+  const hasAutoSyncedRef = useRef<boolean>(siswaList.length > 0);
+
+  useEffect(() => {
+    if (!hasAutoSyncedRef.current && siswaList.length > 0) {
+      hasAutoSyncedRef.current = true;
+      setSelectedIds(new Set(siswaList.map((s) => s.id)));
+    }
+  }, [siswaList]);
 
   // PDF Export state
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [exportProgress, setExportProgress] = useState<string>("");
+  const [printFeedback, setPrintFeedback] = useState<{
+    type: "error" | "info" | "success";
+    text: string;
+    downloadUrl?: string;
+    fileName?: string;
+  } | null>(null);
+  const pdfUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current);
+    };
+  }, []);
 
   // Unique classes
   const availableClasses = useMemo(() => {
@@ -1056,15 +1529,19 @@ export function PrintBeritaAcara({
     setSelectedIds(next);
   };
 
-  // PDF Download using jsPDF
+  // Native Vector PDF Download for Berita Acara & Daftar Hadir using jsPDF
   const handleDownloadPDF = async () => {
-    if (!printAreaRef.current) return;
-    const pageNodes = printAreaRef.current.querySelectorAll<HTMLElement>(".a4-ba-sheet");
-    if (!pageNodes || pageNodes.length === 0) return;
-
+    setPrintFeedback(null);
     try {
       setIsExportingPdf(true);
-      const totalPages = pageNodes.length;
+      setExportProgress("Menyiapkan Berita Acara PDF...");
+
+      const [logoKiri, logoKanan, stempelImg, ttdImg] = await Promise.all([
+        loadImageAsPngDataUrl(konfig.logoKiriUrl),
+        loadImageAsPngDataUrl(konfig.logoKananUrl),
+        loadImageAsPngDataUrl(konfig.stempelSekolahUrl),
+        loadImageAsPngDataUrl(konfig.ttdKepsekUrl),
+      ]);
 
       const pdf = new jsPDF({
         orientation: "portrait",
@@ -1073,33 +1550,299 @@ export function PrintBeritaAcara({
         compress: true,
       });
 
-      for (let i = 0; i < totalPages; i++) {
-        setExportProgress(`Membuat Lembar ${i + 1} dari ${totalPages}...`);
-        const pageEl = pageNodes[i];
+      const schoolName = (konfig.namaSekolah || "MTs. AL-MA'SUM II CIMUNCANG").toUpperCase();
+      const schoolAddress = konfig.alamatSekolah || "Cimuncang, Malausma, Majalengka, Jawa Barat";
+      const marginX = 18;
+      const contentW = 210 - marginX * 2; // 174 mm
 
-        const canvas = await html2canvas(pageEl, {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          backgroundColor: "#ffffff",
-          windowWidth: 1024,
-        });
+      // ---------------- SHEET 1: BERITA ACARA ----------------
+      let y = 16;
+      if (logoKiri) pdf.addImage(logoKiri.dataUrl, "PNG", marginX, y, 16, 16);
+      if (logoKanan) pdf.addImage(logoKanan.dataUrl, "PNG", marginX + contentW - 16, y, 16, 16);
 
-        const imgData = canvas.toDataURL("image/jpeg", 0.95);
-        if (i > 0) {
-          pdf.addPage("a4", "portrait");
+      pdf.setFont("times", "bold");
+      pdf.setFontSize(10);
+      pdf.setTextColor(15, 23, 42);
+      pdf.text("KEMENTERIAN AGAMA REPUBLIK INDONESIA", 105, y + 4.5, { align: "center" });
+
+      pdf.setFontSize(13);
+      pdf.text(fitPdfText(pdf, schoolName, contentW - 38), 105, y + 10, { align: "center" });
+
+      pdf.setFont("times", "italic");
+      pdf.setFontSize(9.5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.text(fitPdfText(pdf, schoolAddress, contentW - 38), 105, y + 15, { align: "center" });
+
+      y += 20;
+      pdf.setDrawColor(0, 0, 0);
+      pdf.setLineWidth(0.7);
+      pdf.line(marginX, y, marginX + contentW, y);
+
+      y += 9;
+      pdf.setFont("times", "bold");
+      pdf.setFontSize(11.5);
+      pdf.setTextColor(0, 0, 0);
+      const titleText = "BERITA ACARA PELAKSANAAN UJIAN DIGITAL (CBT)";
+      pdf.text(titleText, 105, y, { align: "center" });
+      const titleW = pdf.getTextWidth(titleText);
+      pdf.setLineWidth(0.3);
+      pdf.line(105 - titleW / 2, y + 0.8, 105 + titleW / 2, y + 0.8);
+
+      y += 5;
+      pdf.setFont("times", "normal");
+      pdf.setFontSize(10);
+      pdf.text("Tahun Ajaran 2025/2026", 105, y, { align: "center" });
+
+      y += 8;
+      const introText = `Pada hari ini ${formattedDate}, telah diselenggarakan Ujian Berbasis Komputer/Android menggunakan platform sistem CBT MTs. Al-Ma'sum II Cmc dengan rincian administrasi sebagai berikut:`;
+      const introLines = pdf.splitTextToSize(introText, contentW);
+      pdf.text(introLines, marginX, y);
+      y += introLines.length * 4.8 + 4;
+
+      // Table Identitas Pelaksanaan
+      const rows: Array<[string, string, boolean?]> = [
+        ["Nama Madrasah", konfig.namaSekolah || "MTs. AL-MA'SUM II CIMUNCANG"],
+        [
+          "Mata Pelajaran",
+          selectedMapel ? `${selectedMapel.nama} (${selectedMapel.kode})` : "Semua Mata Pelajaran",
+          true,
+        ],
+        ["Tingkat / Kelas", selectedKelas === "all" ? "Semua Kelas" : selectedKelas],
+        ["Ruang & Sesi", ruangSesi],
+        ["Waktu Pelaksanaan", jamUjian],
+        ["Jumlah Peserta Terdaftar", `${attendanceSiswa.length} Orang`],
+        ["Jumlah Hadir / Mengerjakan", "....... Orang"],
+        ["Jumlah Tidak Hadir", "....... Orang"],
+      ];
+
+      const col1W = contentW * 0.34;
+      const col2W = contentW - col1W;
+      const rowH = 7.5;
+
+      for (const [label, val, boldVal] of rows) {
+        pdf.setFillColor(248, 250, 252);
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.25);
+        pdf.rect(marginX, y, col1W, rowH, "FD");
+        pdf.setFillColor(255, 255, 255);
+        pdf.rect(marginX + col1W, y, col2W, rowH, "FD");
+
+        pdf.setFont("times", "bold");
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text(label, marginX + 2.5, y + 5);
+
+        pdf.setFont("times", boldVal ? "bold" : "normal");
+        pdf.text(fitPdfText(pdf, val || "-", col2W - 5), marginX + col1W + 2.5, y + 5);
+        y += rowH;
+      }
+
+      y += 6;
+      pdf.setFont("times", "bold");
+      pdf.setFontSize(9.5);
+      pdf.text("Catatan Selama Pelaksanaan Ujian:", marginX, y);
+      y += 3;
+
+      const noteLines = pdf.splitTextToSize(
+        catatanKhusus || "Pelaksanaan ujian berjalan tertib, aman, dan lancar tanpa kendala teknis.",
+        contentW - 5
+      );
+      const noteBoxH = Math.max(18, noteLines.length * 4.8 + 6);
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(marginX, y, contentW, noteBoxH, "FD");
+      pdf.setFont("times", "normal");
+      pdf.text(noteLines, marginX + 2.5, y + 5.5);
+      y += noteBoxH + 7;
+
+      const closingLines = pdf.splitTextToSize(
+        "Demikian Berita Acara ini dibuat dengan sebenarnya dalam rangkap secukupnya untuk dipergunakan sebagaimana mestinya.",
+        contentW
+      );
+      pdf.text(closingLines, marginX, y);
+
+      // Signature Section
+      const sigY = Math.max(y + 18, 222);
+      const leftCenterX = marginX + contentW * 0.25;
+      const rightCenterX = marginX + contentW * 0.75;
+
+      pdf.setFont("times", "normal");
+      pdf.setFontSize(10);
+      pdf.text("Pengawas Ujian 1,", leftCenterX, sigY, { align: "center" });
+      pdf.setFont("times", "italic");
+      pdf.setFontSize(8.5);
+      pdf.setTextColor(100, 116, 139);
+      pdf.text("(Tanda Tangan)", leftCenterX, sigY + 4.2, { align: "center" });
+
+      pdf.setFont("times", "normal");
+      pdf.setFontSize(10);
+      pdf.setTextColor(0, 0, 0);
+      pdf.text("Kepala Madrasah,", rightCenterX, sigY, { align: "center" });
+
+      if (stempelImg) {
+        pdf.addImage(stempelImg.dataUrl, "PNG", rightCenterX - 18, sigY + 4, 16, 16);
+      }
+      if (ttdImg) {
+        pdf.addImage(ttdImg.dataUrl, "PNG", rightCenterX - 10, sigY + 5, 28, 14);
+      }
+
+      const nameY = sigY + 26;
+      pdf.setFont("times", "bold");
+      pdf.setFontSize(10);
+      pdf.text(pengawas1Nama, leftCenterX, nameY, { align: "center" });
+      const p1W = pdf.getTextWidth(pengawas1Nama);
+      pdf.line(leftCenterX - p1W / 2, nameY + 0.7, leftCenterX + p1W / 2, nameY + 0.7);
+      pdf.setFont("times", "normal");
+      pdf.text(`NIP. ${pengawas1Nip || "....................................."}`, leftCenterX, nameY + 4.5, {
+        align: "center",
+      });
+
+      const kepsekNama = konfig.namaKepsek || "Kepala Madrasah";
+      pdf.setFont("times", "bold");
+      pdf.text(kepsekNama, rightCenterX, nameY, { align: "center" });
+      const ksW = pdf.getTextWidth(kepsekNama);
+      pdf.line(rightCenterX - ksW / 2, nameY + 0.7, rightCenterX + ksW / 2, nameY + 0.7);
+      pdf.setFont("times", "normal");
+      pdf.text(`NIP. ${konfig.nipKepsek || "....................................."}`, rightCenterX, nameY + 4.5, {
+        align: "center",
+      });
+
+      // ---------------- SHEET 2+: DAFTAR HADIR ----------------
+      for (let pageIdx = 0; pageIdx < attendancePages.length; pageIdx++) {
+        setExportProgress(`Membuat Daftar Hadir Lembar ${pageIdx + 1}...`);
+        pdf.addPage("a4", "portrait");
+
+        let ay = 16;
+        pdf.setFont("times", "bold");
+        pdf.setFontSize(10.5);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text("DAFTAR HADIR PESERTA UJIAN BERBASIS KOMPUTER (CBT)", 105, ay, { align: "center" });
+        ay += 5;
+        pdf.setFontSize(12);
+        pdf.text(fitPdfText(pdf, schoolName, contentW), 105, ay, { align: "center" });
+        ay += 4.8;
+        pdf.setFont("times", "normal");
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(51, 65, 85);
+        const subMeta = `Mapel: ${selectedMapel?.nama || "Semua"} • Kelas: ${
+          selectedKelas === "all" ? "Semua Kelas" : selectedKelas
+        } • Ruang: ${ruangSesi}`;
+        pdf.text(fitPdfText(pdf, subMeta, contentW), 105, ay, { align: "center" });
+        ay += 3.5;
+
+        pdf.setDrawColor(0, 0, 0);
+        pdf.setLineWidth(0.4);
+        pdf.line(marginX, ay, marginX + contentW, ay);
+        ay += 5;
+
+        // Table Header
+        const colWidths = [9, 25, 25, 62, 20, 33]; // total = 174mm
+        const headers = ["No", "No. Peserta", "NISN", "Nama Lengkap Siswa", "Kelas", "Tanda Tangan"];
+        const hdrH = 7.5;
+
+        let cx = marginX;
+        pdf.setFont("times", "bold");
+        pdf.setFontSize(9);
+        pdf.setTextColor(0, 0, 0);
+        for (let c = 0; c < headers.length; c++) {
+          pdf.setFillColor(241, 245, 249);
+          pdf.setDrawColor(0, 0, 0);
+          pdf.setLineWidth(0.25);
+          pdf.rect(cx, ay, colWidths[c], hdrH, "FD");
+          const align = c === 3 ? "left" : "center";
+          const tx = align === "left" ? cx + 2 : cx + colWidths[c] / 2;
+          pdf.text(headers[c], tx, ay + 5, { align });
+          cx += colWidths[c];
         }
-        pdf.addImage(imgData, "JPEG", 0, 0, 210, 297, undefined, "FAST");
+        ay += hdrH;
+
+        const pageSiswa = attendancePages[pageIdx];
+        const rowHeight = 9;
+        for (let i = 0; i < pageSiswa.length; i++) {
+          const s = pageSiswa[i];
+          const globalIndex = pageIdx * 20 + i + 1;
+          cx = marginX;
+
+          const cells = [
+            String(globalIndex),
+            s.noPeserta || "-",
+            s.nisn || "-",
+            (s.nama || "-").toUpperCase(),
+            s.kelas || "-",
+            globalIndex % 2 !== 0 ? `${globalIndex}. .........` : `......... ${globalIndex}`,
+          ];
+
+          for (let c = 0; c < cells.length; c++) {
+            pdf.setFillColor(255, 255, 255);
+            pdf.rect(cx, ay, colWidths[c], rowHeight, "FD");
+            if (c === 3) {
+              pdf.setFont("times", "bold");
+              pdf.setFontSize(8.8);
+              pdf.setTextColor(0, 0, 0);
+              pdf.text(fitPdfText(pdf, cells[c], colWidths[c] - 3), cx + 1.8, ay + 5.8);
+            } else if (c === 5) {
+              pdf.setFont("times", "italic");
+              pdf.setFontSize(8.5);
+              pdf.setTextColor(100, 116, 139);
+              pdf.text(cells[c], cx + 2.5, ay + 5.8);
+            } else {
+              pdf.setFont(c <= 2 ? "courier" : "times", "normal");
+              pdf.setFontSize(8.8);
+              pdf.setTextColor(0, 0, 0);
+              pdf.text(fitPdfText(pdf, cells[c], colWidths[c] - 2), cx + colWidths[c] / 2, ay + 5.8, {
+                align: "center",
+              });
+            }
+            cx += colWidths[c];
+          }
+          ay += rowHeight;
+        }
+
+        // Footer Daftar Hadir
+        const fy = 264;
+        pdf.setFont("times", "italic");
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(100, 116, 139);
+        pdf.text(
+          `Lembar ${pageIdx + 1} dari ${attendancePages.length} • Dicetak melalui Sistem CBT MTs. Al-Ma'sum II Cmc`,
+          marginX,
+          fy + 14
+        );
+
+        pdf.setFont("times", "normal");
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(0, 0, 0);
+        pdf.text("Pengawas Ruang,", rightCenterX, fy, { align: "center" });
+        pdf.setFont("times", "bold");
+        pdf.text(pengawas1Nama, rightCenterX, fy + 13, { align: "center" });
+        const pw = pdf.getTextWidth(pengawas1Nama);
+        pdf.line(rightCenterX - pw / 2, fy + 13.6, rightCenterX + pw / 2, fy + 13.6);
+        pdf.setFont("times", "normal");
+        pdf.setFontSize(8.5);
+        pdf.text(`NIP. ${pengawas1Nip || "..........................."}`, rightCenterX, fy + 17.2, {
+          align: "center",
+        });
       }
 
       const mapelName = (selectedMapel?.nama || "Ujian").replace(/[^a-zA-Z0-9]/g, "_");
       const kelasLabel = selectedKelas === "all" ? "Semua_Kelas" : selectedKelas.replace(/[^a-zA-Z0-9]/g, "_");
       const fileName = `Berita_Acara_A4_${mapelName}_${kelasLabel}_${tanggalUjian}.pdf`;
-      pdf.save(fileName);
+      if (pdfUrlRef.current) URL.revokeObjectURL(pdfUrlRef.current);
+      const blobUrl = triggerPdfBlobDownload(pdf, fileName);
+      pdfUrlRef.current = blobUrl;
+
       setExportProgress("Selesai!");
-    } catch (err) {
+      setPrintFeedback({
+        type: "success",
+        text: `File PDF Berita Acara berhasil dibuat:`,
+        downloadUrl: blobUrl,
+        fileName,
+      });
+    } catch (err: any) {
       console.error("Gagal export PDF Berita Acara:", err);
-      alert("Terjadi kendala saat export PDF. Anda juga dapat menggunakan Cetak / Simpan PDF langsung dari browser.");
+      setPrintFeedback({
+        type: "error",
+        text: `Gagal export PDF (${err?.message || "kesalahan internal"}). Gunakan tombol Cetak / Simpan PDF.`,
+      });
     } finally {
       setIsExportingPdf(false);
       setExportProgress("");
@@ -1108,14 +1851,28 @@ export function PrintBeritaAcara({
 
   // Browser print
   const handleBrowserPrint = () => {
+    setPrintFeedback(null);
     setActiveTab("preview");
     setTimeout(() => {
-      window.print();
-    }, 150);
+      try {
+        window.print();
+        if (window.self !== window.top) {
+          setPrintFeedback({
+            type: "info",
+            text: "Jika dialog cetak browser tidak muncul di mode preview, gunakan tombol hijau Unduh File PDF.",
+          });
+        }
+      } catch {
+        setPrintFeedback({
+          type: "info",
+          text: "Browser memblokir dialog cetak. Silakan gunakan tombol hijau Unduh File PDF.",
+        });
+      }
+    }, 200);
   };
 
   return (
-    <div id="print-modal-portal" className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-start p-2 sm:p-4 overflow-hidden">
+    <div id="print-modal-portal" className="fixed inset-0 z-[100] bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-start p-2 sm:p-4 overflow-hidden">
       {/* Print CSS Injection for A4 Berita Acara */}
       <style>{`
         @media print {
@@ -1123,9 +1880,15 @@ export function PrintBeritaAcara({
             size: A4 portrait;
             margin: 8mm 8mm 8mm 8mm;
           }
-          body {
-            visibility: hidden !important;
+          html, body {
+            height: auto !important;
+            overflow: visible !important;
+            margin: 0 !important;
+            padding: 0 !important;
             background: white !important;
+          }
+          body * {
+            visibility: hidden !important;
           }
           #print-modal-portal, #print-modal-portal * {
             visibility: visible !important;
@@ -1135,10 +1898,29 @@ export function PrintBeritaAcara({
             left: 0 !important;
             top: 0 !important;
             width: 100% !important;
+            height: auto !important;
             background: white !important;
             padding: 0 !important;
             margin: 0 !important;
             overflow: visible !important;
+            display: block !important;
+          }
+          .print-modal-shell,
+          .print-modal-scroll,
+          .print-sheets-wrapper {
+            position: static !important;
+            width: 100% !important;
+            max-width: none !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            display: block !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            background: white !important;
           }
           .no-print {
             display: none !important;
@@ -1158,10 +1940,14 @@ export function PrintBeritaAcara({
             background: white !important;
             font-family: 'Times New Roman', Times, serif !important;
           }
+          .a4-ba-sheet:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
         }
       `}</style>
 
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[96vh] flex flex-col overflow-hidden border border-slate-200">
+      <div className="print-modal-shell bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[96vh] flex flex-col overflow-hidden border border-slate-200">
         {/* Header Bar */}
         <div className="no-print p-4 bg-gradient-to-r from-indigo-700 to-indigo-900 text-white flex flex-wrap justify-between items-center gap-3 border-b border-indigo-950">
           <div className="flex items-center gap-3">
@@ -1294,8 +2080,41 @@ export function PrintBeritaAcara({
           </div>
         </div>
 
+        {printFeedback && (
+          <div
+            className={`no-print px-4 py-2 text-xs font-bold flex flex-wrap items-center justify-between gap-2 border-b ${
+              printFeedback.type === "error"
+                ? "bg-rose-50 text-rose-800 border-rose-200"
+                : printFeedback.type === "success"
+                ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                : "bg-amber-50 text-amber-800 border-amber-200"
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span>{printFeedback.text}</span>
+              {printFeedback.downloadUrl && printFeedback.fileName && (
+                <a
+                  href={printFeedback.downloadUrl}
+                  download={printFeedback.fileName}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-extrabold underline-offset-2"
+                >
+                  <Download size={12} />
+                  <span>Simpan {printFeedback.fileName}</span>
+                </a>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setPrintFeedback(null)}
+              className="p-0.5 rounded hover:bg-black/10 cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto bg-slate-200/70 p-3 sm:p-6 text-slate-800">
+        <div className="print-modal-scroll flex-1 overflow-y-auto bg-slate-200/70 p-3 sm:p-6 text-slate-800">
           {/* TAB: SETTINGS & CHECKLIST */}
           {activeTab === "settings" && (
             <div className="no-print max-w-3xl mx-auto space-y-6">
@@ -1459,7 +2278,7 @@ export function PrintBeritaAcara({
           {/* TAB: A4 PREVIEW (SHEET 1: BERITA ACARA, SHEET 2+: DAFTAR HADIR) */}
           <div
             ref={printAreaRef}
-            className={`${activeTab === "settings" ? "hidden" : "flex"} flex-col items-center gap-8`}
+            className={`print-sheets-wrapper ${activeTab === "settings" ? "hidden" : "flex"} flex-col items-center gap-8`}
           >
             {/* LEMBAR 1: FORMULIR BERITA ACARA RESMI (A4) */}
             <div
