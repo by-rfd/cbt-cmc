@@ -105,7 +105,12 @@ import {
 } from "../utils/massSoalParser";
 import { parseDocxSoalFile } from "../utils/docxSoalParser";
 import { compressImageFile } from "../utils/imageUtils";
-import RichMathText from "./RichMathText";
+import RichMathText, {
+  areAllOptionsArabicRtl,
+  getLineDirection,
+  hasArabicText,
+  isArabicDominant,
+} from "./RichMathText";
 
 interface AdminPortalProps {
   onLogout: () => void;
@@ -3845,12 +3850,22 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                                             </div>
                                           </div>
 
-                                          <div className="font-extrabold text-slate-800 leading-relaxed text-[12.5px] flex items-start gap-1.5">
-                                            <span className="shrink-0">{sIdx + 1}.</span>
-                                            <div className="flex-1 min-w-0">
-                                              <RichMathText text={soal.teks} />
-                                            </div>
-                                          </div>
+                                          {(() => {
+                                            const firstLine = (soal.teks || "").split(/\r?\n/).find((l) => l.trim()) || "";
+                                            const qFirstRtl = getLineDirection(firstLine) === "rtl";
+                                            return (
+                                              <div
+                                                className={`font-extrabold text-slate-800 leading-relaxed text-[12.5px] flex items-start gap-1.5 ${
+                                                  qFirstRtl ? "flex-row-reverse" : ""
+                                                }`}
+                                              >
+                                                <span className="shrink-0">{sIdx + 1}.</span>
+                                                <div className="flex-1 min-w-0">
+                                                  <RichMathText text={soal.teks} />
+                                                </div>
+                                              </div>
+                                            );
+                                          })()}
 
                                           {soal.gambarUrl && (
                                             <div className="bg-slate-50 p-2 rounded-lg border border-slate-150 inline-block">
@@ -3864,43 +3879,57 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                                           )}
 
                                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px] font-semibold pt-2 border-t border-slate-100">
-                                            {(["A", "B", "C", "D", "E"] as const).map((key) => {
-                                              const val = soal.opsi?.[key];
-                                              const optImg = soal.opsiGambar?.[key];
-                                              if (!val && !optImg) return null;
-                                              const isCorrect = key === soal.kunci;
-                                              return (
-                                                <div
-                                                  key={key}
-                                                  className={`p-2 rounded-lg border flex flex-col gap-1.5 ${
-                                                    isCorrect
-                                                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 font-black"
-                                                      : "bg-white text-slate-600 border-slate-150 font-medium"
-                                                  }`}
-                                                >
-                                                  <div className="flex gap-1.5 items-start">
-                                                    <strong className={isCorrect ? "text-emerald-700 font-mono shrink-0" : "text-[#0666AE] font-mono shrink-0"}>
-                                                      {key}.
-                                                    </strong>
-                                                    {val && (
-                                                      <div className="flex-1 min-w-0">
-                                                        <RichMathText text={val} />
-                                                      </div>
-                                                    )}
-                                                    {isCorrect && (
-                                                      <Check size={12} className="text-emerald-600 ml-auto flex-shrink-0" />
+                                            {(() => {
+                                              const allOptsArabicRtl = areAllOptionsArabicRtl(soal.opsi);
+                                              return (["A", "B", "C", "D", "E"] as const).map((key) => {
+                                                const val = soal.opsi?.[key];
+                                                const optImg = soal.opsiGambar?.[key];
+                                                if (!val && !optImg) return null;
+                                                const isCorrect = key === soal.kunci;
+                                                return (
+                                                  <div
+                                                    key={key}
+                                                    className={`p-2 rounded-lg border flex flex-col gap-1.5 ${
+                                                      isCorrect
+                                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 font-black"
+                                                        : "bg-white text-slate-600 border-slate-150 font-medium"
+                                                    }`}
+                                                  >
+                                                    <div
+                                                      className={`flex gap-1.5 items-start ${
+                                                        allOptsArabicRtl ? "flex-row-reverse" : ""
+                                                      }`}
+                                                    >
+                                                      <strong className={isCorrect ? "text-emerald-700 font-mono shrink-0" : "text-[#0666AE] font-mono shrink-0"}>
+                                                        {key}.
+                                                      </strong>
+                                                      {val && (
+                                                        <div className="flex-1 min-w-0">
+                                                          <RichMathText text={val} />
+                                                        </div>
+                                                      )}
+                                                      {isCorrect && (
+                                                        <Check
+                                                          size={12}
+                                                          className={`text-emerald-600 flex-shrink-0 ${
+                                                            allOptsArabicRtl ? "mr-auto" : "ml-auto"
+                                                          }`}
+                                                        />
+                                                      )}
+                                                    </div>
+                                                    {optImg && (
+                                                      <img
+                                                        src={optImg}
+                                                        alt={`Gambar Opsi ${key}`}
+                                                        className={`max-h-24 w-auto object-contain rounded border border-slate-200 bg-white ${
+                                                          allOptsArabicRtl ? "self-end mr-5" : "self-start ml-5"
+                                                        }`}
+                                                      />
                                                     )}
                                                   </div>
-                                                  {optImg && (
-                                                    <img
-                                                      src={optImg}
-                                                      alt={`Gambar Opsi ${key}`}
-                                                      className="max-h-24 w-auto object-contain rounded border border-slate-200 bg-white self-start ml-5"
-                                                    />
-                                                  )}
-                                                </div>
-                                              );
-                                            })}
+                                                );
+                                              });
+                                            })()}
                                           </div>
                                         </div>
                                       );
@@ -6899,9 +6928,13 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                                   )}
                                 </div>
 
-                                <p className="font-bold text-slate-800 text-[12px] leading-snug line-clamp-2">
-                                  {s.teks || <span className="italic text-slate-400">(Teks soal kosong)</span>}
-                                </p>
+                                <div className="font-bold text-slate-800 text-[12px] leading-snug line-clamp-2 w-full">
+                                  {s.teks ? (
+                                    <RichMathText text={s.teks} />
+                                  ) : (
+                                    <span className="italic text-slate-400">(Teks soal kosong)</span>
+                                  )}
+                                </div>
 
                                 <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 font-semibold">
                                   <span>
@@ -7123,10 +7156,11 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                   </div>
                   <textarea
                     rows={8}
+                    dir="auto"
                     value={massSoalText}
                     onChange={(e) => setMassSoalText(e.target.value)}
                     placeholder={`Contoh format:\n1. Hitung nilai $\\frac{3}{4} + \\frac{1}{2} = \\dots$\nA. $\\frac{5}{4}$\nB. $\\frac{4}{6}$\nC. 1\nD. 2\nKunci: A\n\n٢. ما معنى كلمة «مدرسة»؟\nأ. Rumah\nب. Sekolah\nج. Masjid\nد. Pasar\nالمفتاح: ب`}
-                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 font-mono text-[11px] leading-relaxed focus:outline-none focus:border-[#0666AE]"
+                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-slate-800 font-sans text-[11px] leading-relaxed focus:outline-none focus:border-[#0666AE] bidi-plaintext"
                     required
                   />
                 </div>
@@ -7172,7 +7206,7 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                     onChange={(e) => setInputSoalTeks(e.target.value)}
                     dir="auto"
                     placeholder="Ketik pertanyaan soal di sini... (Untuk rumus matematika gunakan $...$, misal $\frac{a}{b}$)"
-                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:border-[#0666AE]"
+                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:border-[#0666AE] bidi-plaintext"
                     required
                   />
                   {inputSoalTeks.trim() && (
@@ -7258,11 +7292,13 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                           </span>
                           <input
                             type="text"
-                            dir="auto"
+                            dir={isArabicDominant(inputSoalOpsi[optKey]) ? "rtl" : "ltr"}
                             value={inputSoalOpsi[optKey]}
                             onChange={(e) => setInputSoalOpsi({ ...inputSoalOpsi, [optKey]: e.target.value })}
                             placeholder={`Teks jawaban ${optKey} (opsional jika pakai gambar)...`}
-                            className="flex-1 p-2 bg-white border border-slate-200 rounded-xl text-slate-800"
+                            className={`flex-1 p-2 bg-white border border-slate-200 rounded-xl text-slate-800 bidi-plaintext ${
+                              hasArabicText(inputSoalOpsi[optKey]) ? "font-arabic text-sm" : ""
+                            }`}
                             required={(optKey === "A" || optKey === "B") && !optImg}
                           />
                           <label className="px-2.5 py-2 bg-sky-50 hover:bg-sky-100 text-[#0666AE] border border-sky-200 rounded-xl text-[10px] font-bold flex items-center gap-1 cursor-pointer shrink-0">
@@ -7361,25 +7397,36 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                     <img src={pq.gambarUrl} alt="Gambar Soal" className="max-h-36 object-contain rounded-lg border" />
                   )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
-                    {(["A", "B", "C", "D", "E"] as const).map((k) => {
-                      const val = pq.opsi[k];
-                      const img = pq.opsiGambar?.[k];
-                      if (!val && !img) return null;
-                      return (
-                        <div
-                          key={k}
-                          className={`p-2 rounded-xl border text-[11px] flex flex-col gap-1 ${
-                            pq.kunci === k ? "bg-emerald-50 border-emerald-200 font-bold" : "bg-slate-50 border-slate-200"
-                          }`}
-                        >
-                          <div className="flex gap-1.5 items-start">
-                            <span className="font-mono font-black text-[#0666AE] shrink-0">{k}.</span>
-                            {val && <RichMathText text={val} className="flex-1" />}
+                    {(() => {
+                      const allOptsArabicRtl = areAllOptionsArabicRtl(pq.opsi);
+                      return (["A", "B", "C", "D", "E"] as const).map((k) => {
+                        const val = pq.opsi[k];
+                        const img = pq.opsiGambar?.[k];
+                        if (!val && !img) return null;
+                        return (
+                          <div
+                            key={k}
+                            className={`p-2 rounded-xl border text-[11px] flex flex-col gap-1 ${
+                              pq.kunci === k ? "bg-emerald-50 border-emerald-200 font-bold" : "bg-slate-50 border-slate-200"
+                            }`}
+                          >
+                            <div className={`flex gap-1.5 items-start ${allOptsArabicRtl ? "flex-row-reverse" : ""}`}>
+                              <span className="font-mono font-black text-[#0666AE] shrink-0">{k}.</span>
+                              {val && <RichMathText text={val} className="flex-1 min-w-0" />}
+                            </div>
+                            {img && (
+                              <img
+                                src={img}
+                                alt={`Opsi ${k}`}
+                                className={`max-h-20 object-contain rounded border ${
+                                  allOptsArabicRtl ? "self-end mr-4" : "self-start ml-4"
+                                }`}
+                              />
+                            )}
                           </div>
-                          {img && <img src={img} alt={`Opsi ${k}`} className="max-h-20 object-contain rounded border self-start ml-4" />}
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
               ))}
@@ -7432,7 +7479,7 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                   dir="auto"
                   value={editSoalTeks}
                   onChange={(e) => setEditSoalTeks(e.target.value)}
-                  className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:border-[#0666AE]"
+                  className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-slate-800 font-medium focus:outline-none focus:border-[#0666AE] bidi-plaintext"
                   placeholder="Tuliskan pertanyaan ujian..."
                   required
                 />
@@ -7558,11 +7605,13 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                         <span className="font-extrabold text-[#0666AE] w-4 font-mono text-[11px]">{o}</span>
                         <input
                           type="text"
-                          dir="auto"
+                          dir={isArabicDominant(editSoalOpsi[o]) ? "rtl" : "ltr"}
                           value={editSoalOpsi[o]}
                           onChange={(e) => setEditSoalOpsi({ ...editSoalOpsi, [o]: e.target.value })}
                           placeholder={`Isi pilihan Opsi ${o}...`}
-                          className="flex-1 p-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#0666AE]"
+                          className={`flex-1 p-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-[#0666AE] bidi-plaintext ${
+                            hasArabicText(editSoalOpsi[o]) ? "font-arabic text-sm" : ""
+                          }`}
                           required={["A", "B"].includes(o) && !optImg}
                         />
                         <label className="px-2.5 py-2 bg-sky-50 hover:bg-sky-100 text-[#0666AE] border border-sky-200 rounded-xl text-[10px] font-bold flex items-center gap-1 cursor-pointer shrink-0">

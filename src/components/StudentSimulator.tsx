@@ -33,7 +33,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { Siswa, Soal, JadwalUjian, SesiSiswa, HasilUjian } from "../types";
 import { filterQuestionsForJadwal, canonicalClassAlias } from "../utils/examQuestionFilter";
-import RichMathText, { hasArabicText } from "./RichMathText";
+import RichMathText, { areAllOptionsArabicRtl, isArabicDominant } from "./RichMathText";
 
 export default function StudentSimulator({ standalone = false }: { standalone?: boolean }) {
   // Device Hardware states
@@ -1913,60 +1913,72 @@ export default function StudentSimulator({ standalone = false }: { standalone?: 
                   )}
 
                   {/* Question Text with Math & Arabic RTL support */}
-                  <div className="text-slate-800 font-semibold leading-relaxed tracking-wide px-0.5" id="exam-teks-body">
-                    <div className={`${fontSizeClass === "text-sm" ? "text-xs" : fontSizeClass === "text-base" ? "text-sm" : "text-base"}`}>
+                  <div className="text-slate-800 font-semibold leading-relaxed px-0.5 w-full" id="exam-teks-body">
+                    <div className={`w-full ${fontSizeClass === "text-sm" ? "text-xs" : fontSizeClass === "text-base" ? "text-sm" : "text-base"}`}>
                       <RichMathText text={questions[currentIndex].teks} />
                     </div>
                   </div>
 
                   {/* Multiple Choice Options List (Text + Math + Arabic RTL + Option Images) */}
                   <div className="space-y-2 pt-2" id="exam-opsi-list">
-                    {(["A", "B", "C", "D", "E"] as const).map((key) => {
-                      const optText = (questions[currentIndex].opsi[key] || "").trim();
-                      const optImg = questions[currentIndex].opsiGambar?.[key];
-                      if (!optText && !optImg) return null;
+                    {(() => {
+                      const currentQ = questions[currentIndex];
+                      const allOptsArabicRtl = areAllOptionsArabicRtl(currentQ.opsi);
+                      return (["A", "B", "C", "D", "E"] as const).map((key) => {
+                        const optText = (currentQ.opsi[key] || "").trim();
+                        const optImg = currentQ.opsiGambar?.[key];
+                        if (!optText && !optImg) return null;
 
-                      const isSelected = studentAnswers[currentIndex] === key;
-                      const optArabic = hasArabicText(optText);
+                        const isSelected = studentAnswers[currentIndex] === key;
+                        const optArabic = isArabicDominant(optText);
 
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() => handleSelectAnswer(key)}
-                          className={`w-full p-2.5 text-left border rounded-xl font-sans transition-all text-xs flex items-start gap-2.5 cursor-pointer hover:shadow-xs ${
-                            isSelected 
-                              ? "bg-gradient-to-r from-blue-50 to-sky-50/70 border-[#0666AE] text-slate-800 ring-1 ring-[#0666AE]" 
-                              : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50/50"
-                          }`}
-                        >
-                          <span className={`w-5 h-5 rounded-lg text-[10px] font-black uppercase shrink-0 flex items-center justify-center border transition-all ${
-                            isSelected 
-                              ? "bg-[#0666AE] text-white border-[#0666AE] shadow-inner" 
-                              : "bg-slate-100 text-slate-650 border-slate-300"
-                          }`}>
-                            {key}
-                          </span>
-                          <div className={`flex-1 min-w-0 space-y-1.5 ${optArabic ? "text-right" : "text-left"}`}>
-                            {optImg && (
-                              <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200/80 inline-block max-w-full">
-                                <img
-                                  src={optImg}
-                                  alt={`Opsi ${key}`}
-                                  className="max-h-32 max-w-full rounded object-contain"
-                                  referrerPolicy="no-referrer"
-                                />
-                              </div>
-                            )}
-                            {optText && (
-                              <div className="font-semibold pt-0.5 leading-snug">
-                                <RichMathText text={optText} />
-                              </div>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => handleSelectAnswer(key)}
+                            className={`w-full p-2.5 border rounded-xl font-sans transition-all text-xs flex items-start gap-2.5 cursor-pointer hover:shadow-xs ${
+                              allOptsArabicRtl ? "flex-row-reverse text-right" : "text-left"
+                            } ${
+                              isSelected
+                                ? "bg-gradient-to-r from-blue-50 to-sky-50/70 border-[#0666AE] text-slate-800 ring-1 ring-[#0666AE]"
+                                : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50/50"
+                            }`}
+                          >
+                            <span
+                              className={`w-5 h-5 rounded-lg text-[10px] font-black uppercase shrink-0 flex items-center justify-center border transition-all ${
+                                isSelected
+                                  ? "bg-[#0666AE] text-white border-[#0666AE] shadow-inner"
+                                  : "bg-slate-100 text-slate-650 border-slate-300"
+                              }`}
+                            >
+                              {key}
+                            </span>
+                            <div
+                              className={`flex-1 min-w-0 space-y-1.5 flex flex-col ${
+                                allOptsArabicRtl || optArabic ? "text-right items-end" : "text-left items-start"
+                              }`}
+                            >
+                              {optImg && (
+                                <div className="bg-slate-50 p-1.5 rounded-lg border border-slate-200/80 inline-block max-w-full">
+                                  <img
+                                    src={optImg}
+                                    alt={`Opsi ${key}`}
+                                    className="max-h-32 max-w-full rounded object-contain"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                              )}
+                              {optText && (
+                                <div className="font-semibold pt-0.5 leading-snug w-full">
+                                  <RichMathText text={optText} />
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
 

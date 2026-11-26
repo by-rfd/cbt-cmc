@@ -9,7 +9,13 @@
 
 .font-arabic {
   font-family: "Noto Naskh Arabic", "Amiri", "Traditional Arabic", "Plus Jakarta Sans", serif;
-  line-height: 2;
+  line-height: 2.05;
+  letter-spacing: 0 !important;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+
+.bidi-plaintext {
+  unicode-bidi: plaintext;
 }
 
 /* Custom scrollbar hider */
