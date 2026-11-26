@@ -287,12 +287,17 @@ function renderKatexSpan(latex: string, displayMode: boolean, key: React.Key) {
 }
 
 export default function RichMathText({ text, className = "" }: RichMathTextProps) {
-  const paragraphs = React.useMemo(() => {
-    if (!text) return [];
-    return buildParagraphs(tokenizeMathSegments(text));
-  }, [text]);
+  const sanitizedText = React.useMemo(
+    () => (text || "").replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069\u061C]/g, ""),
+    [text]
+  );
 
-  if (!text) return null;
+  const paragraphs = React.useMemo(() => {
+    if (!sanitizedText) return [];
+    return buildParagraphs(tokenizeMathSegments(sanitizedText));
+  }, [sanitizedText]);
+
+  if (!sanitizedText) return null;
 
   return (
     <div className={`w-full space-y-1 ${className}`}>
