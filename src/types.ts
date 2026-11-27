@@ -65,6 +65,7 @@ export interface Soal {
   kunci: "A" | "B" | "C" | "D" | "E";
   guruId?: string; // If added by a specific teacher
   kelasIds?: string[]; // Target academic class IDs (e.g., X-1, X-2, X-3)
+  urutan?: number; // Exact sequence order from uploaded Word/batch document
 }
 
 export interface JadwalUjian {

@@ -92,6 +92,8 @@ import {
   formatSoalKelasNames,
   normalizeSoalKelasIds,
   getClassGradeLevel,
+  sortSoalByWordOrder,
+  canonicalClassAlias,
   SYSTEM_GURU_ID,
 } from "../utils/examQuestionFilter";
 import {
@@ -178,6 +180,10 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
   const [nilaiFilterMapel, setNilaiFilterMapel] = useState("");
   const [nilaiFilterKelas, setNilaiFilterKelas] = useState("");
   const [nilaiSearch, setNilaiSearch] = useState("");
+
+  // Filter states for Manajemen User (Siswa)
+  const [filterSiswaKelas, setFilterSiswaKelas] = useState("");
+  const [searchSiswaQuery, setSearchSiswaQuery] = useState("");
 
   const getNilaiGradeLevel = (nama: string): "VII" | "VIII" | "IX" | "Lainnya" => {
     const upper = (nama || "").toUpperCase();
@@ -2999,42 +3005,167 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                     </div>
                   </form>
 
-                  <div className="max-h-[300px] overflow-y-auto space-y-2 text-xs pr-1">
-                    {dbState.siswa.map((s) => (
-                      <div
-                        key={s.id}
-                        className="p-3 bg-white rounded-xl border border-slate-100 flex justify-between items-center shadow-sm hover:border-[#0666AE]/20 transition-all font-sans"
-                      >
-                        <div className="text-left flex-1 min-w-0 pr-2">
-                          <p className="font-extrabold text-slate-800 text-[13px] truncate">{s.nama}</p>
-                          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-slate-400 mt-1.5 font-medium leading-relaxed">
-                            <p>NISN: <span className="font-mono text-slate-600 font-bold bg-slate-50 px-1 py-0.2 rounded">{s.nisn}</span></p>
-                            <p>No. Peserta: <span className="font-mono text-emerald-600 font-bold bg-emerald-50 px-1 py-0.2 rounded">{s.noPeserta || "-"}</span></p>
-                            <p>Username: <span className="text-[#0666AE] font-bold">{s.username}</span></p>
-                            <p>Password: <span className="text-purple-600 font-mono font-bold">{s.password || "Password123"}</span></p>
-                            <p>Kelas: <span className="text-slate-700 font-extrabold">{s.kelas || "-"}</span></p>
-                            <p>Ruang CBT: <span className="text-amber-600 font-extrabold">{dbState.kelas.find((k) => k.id === s.kelasId)?.nama || "-"}</span></p>
+                  {(() => {
+                    const classOptionsMap = new Map<string, { label: string; count: number }>();
+                    let unassignedCount = 0;
+
+                    dbState.kelasAkademik.forEach((ka) => {
+                      const key = canonicalClassAlias(ka.nama) || ka.nama.trim().toLowerCase();
+                      if (key && !classOptionsMap.has(key)) {
+                        classOptionsMap.set(key, { label: ka.nama, count: 0 });
+                      }
+                    });
+
+                    dbState.siswa.forEach((s) => {
+                      const rawKelas = (s.kelas || "").trim();
+                      if (!rawKelas) {
+                        unassignedCount++;
+                        return;
+                      }
+                      const key = canonicalClassAlias(rawKelas) || rawKelas.toLowerCase();
+                      const existing = classOptionsMap.get(key);
+                      if (existing) {
+                        existing.count++;
+                      } else {
+                        classOptionsMap.set(key, { label: rawKelas, count: 1 });
+                      }
+                    });
+
+                    const classFilterOptions = Array.from(classOptionsMap.entries())
+                      .map(([key, val]) => ({ key, ...val }))
+                      .sort((a, b) => a.label.localeCompare(b.label, "id", { numeric: true }));
+
+                    const filteredSiswaList = dbState.siswa.filter((s) => {
+                      if (filterSiswaKelas) {
+                        const rawKelas = (s.kelas || "").trim();
+                        if (filterSiswaKelas === "__TANPA_KELAS__") {
+                          if (rawKelas) return false;
+                        } else {
+                          const sKey = canonicalClassAlias(rawKelas) || rawKelas.toLowerCase();
+                          if (sKey !== filterSiswaKelas) return false;
+                        }
+                      }
+
+                      if (searchSiswaQuery.trim()) {
+                        const q = searchSiswaQuery.trim().toLowerCase();
+                        const matchNama = (s.nama || "").toLowerCase().includes(q);
+                        const matchNisn = (s.nisn || "").toLowerCase().includes(q);
+                        const matchNo = (s.noPeserta || "").toLowerCase().includes(q);
+                        const matchUser = (s.username || "").toLowerCase().includes(q);
+                        const matchKelas = (s.kelas || "").toLowerCase().includes(q);
+                        if (!matchNama && !matchNisn && !matchNo && !matchUser && !matchKelas) return false;
+                      }
+
+                      return true;
+                    });
+
+                    return (
+                      <div className="space-y-2.5">
+                        {/* Filter per Kelas & Pencarian Cepat Siswa */}
+                        <div className="bg-white p-3 rounded-xl border border-slate-200/80 shadow-2xs space-y-2 text-xs">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[9px] text-slate-500 font-extrabold uppercase block mb-0.5">
+                                Filter Per Kelas
+                              </label>
+                              <select
+                                value={filterSiswaKelas}
+                                onChange={(e) => setFilterSiswaKelas(e.target.value)}
+                                className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-[#0666AE] font-bold cursor-pointer focus:outline-none focus:border-[#0666AE]"
+                              >
+                                <option value="">Semua Kelas ({dbState.siswa.length} Siswa)</option>
+                                {classFilterOptions.map((opt) => (
+                                  <option key={opt.key} value={opt.key}>
+                                    {opt.label} ({opt.count} Siswa)
+                                  </option>
+                                ))}
+                                {unassignedCount > 0 && (
+                                  <option value="__TANPA_KELAS__">
+                                    Belum Ada Kelas ({unassignedCount} Siswa)
+                                  </option>
+                                )}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="text-[9px] text-slate-500 font-extrabold uppercase block mb-0.5">
+                                Cari Siswa
+                              </label>
+                              <input
+                                type="text"
+                                value={searchSiswaQuery}
+                                onChange={(e) => setSearchSiswaQuery(e.target.value)}
+                                placeholder="Nama, NISN, No. Peserta, Username..."
+                                className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 font-medium focus:outline-none focus:border-[#0666AE]"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 font-bold pt-0.5">
+                            <span>
+                              Menampilkan <strong className="text-slate-800">{filteredSiswaList.length}</strong> dari{" "}
+                              <strong className="text-slate-800">{dbState.siswa.length}</strong> Siswa
+                            </span>
+                            {(filterSiswaKelas || searchSiswaQuery) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFilterSiswaKelas("");
+                                  setSearchSiswaQuery("");
+                                }}
+                                className="text-red-600 hover:text-red-700 font-extrabold uppercase hover:underline cursor-pointer"
+                              >
+                                Reset Filter
+                              </button>
+                            )}
                           </div>
                         </div>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => handleEditSiswaClick(s)}
-                            className="text-slate-400 hover:text-amber-600 p-2 transition-colors cursor-pointer rounded-xl hover:bg-amber-50"
-                            title="Edit Data Siswa"
-                          >
-                            <Edit size={13} />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSiswa(s.id)}
-                            className="text-slate-400 hover:text-red-600 p-2 transition-colors cursor-pointer rounded-xl hover:bg-red-50"
-                            title="Hapus Siswa Dr Pangkalan Data"
-                          >
-                            <Trash2 size={13} />
-                          </button>
+
+                        <div className="max-h-[300px] overflow-y-auto space-y-2 text-xs pr-1">
+                          {filteredSiswaList.length === 0 ? (
+                            <div className="p-6 text-center bg-white rounded-xl border border-dashed border-slate-200 text-slate-400 font-bold">
+                              {dbState.siswa.length === 0
+                                ? "Belum ada data siswa terdaftar."
+                                : "Tidak ada siswa yang sesuai dengan filter kelas / pencarian."}
+                            </div>
+                          ) : (
+                            filteredSiswaList.map((s) => (
+                              <div
+                                key={s.id}
+                                className="p-3 bg-white rounded-xl border border-slate-100 flex justify-between items-center shadow-sm hover:border-[#0666AE]/20 transition-all font-sans"
+                              >
+                                <div className="text-left flex-1 min-w-0 pr-2">
+                                  <p className="font-extrabold text-slate-800 text-[13px] truncate">{s.nama}</p>
+                                  <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-slate-400 mt-1.5 font-medium leading-relaxed">
+                                    <p>NISN: <span className="font-mono text-slate-600 font-bold bg-slate-50 px-1 py-0.2 rounded">{s.nisn}</span></p>
+                                    <p>No. Peserta: <span className="font-mono text-emerald-600 font-bold bg-emerald-50 px-1 py-0.2 rounded">{s.noPeserta || "-"}</span></p>
+                                    <p>Username: <span className="text-[#0666AE] font-bold">{s.username}</span></p>
+                                    <p>Password: <span className="text-purple-600 font-mono font-bold">{s.password || "Password123"}</span></p>
+                                    <p>Kelas: <span className="text-slate-700 font-extrabold">{s.kelas || "-"}</span></p>
+                                    <p>Ruang CBT: <span className="text-amber-600 font-extrabold">{dbState.kelas.find((k) => k.id === s.kelasId)?.nama || "-"}</span></p>
+                                  </div>
+                                </div>
+                                <div className="flex gap-1">
+                                  <button
+                                    onClick={() => handleEditSiswaClick(s)}
+                                    className="text-slate-400 hover:text-amber-600 p-2 transition-colors cursor-pointer rounded-xl hover:bg-amber-50"
+                                    title="Edit Data Siswa"
+                                  >
+                                    <Edit size={13} />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteSiswa(s.id)}
+                                    className="text-slate-400 hover:text-red-600 p-2 transition-colors cursor-pointer rounded-xl hover:bg-red-50"
+                                    title="Hapus Siswa Dr Pangkalan Data"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))
+                          )}
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Data Guru */}
@@ -3506,8 +3637,12 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                   // Keyword Search
                   if (bsoalSearch) {
                     const kw = bsoalSearch.toLowerCase();
-                    const matchTeks = soal.teks.toLowerCase().includes(kw);
-                    const matchOpsi = Object.values(soal.opsi).some((opt) => opt && (opt as string).toLowerCase().includes(kw));
+                    const stripMarkers = (str: string) =>
+                      str.replace(/\[\[\/?(?:U|TABLE|ROW|CELL|BR)\]\]|<\/?u>/gi, " ").toLowerCase();
+                    const matchTeks = stripMarkers(soal.teks || "").includes(kw);
+                    const matchOpsi = Object.values(soal.opsi).some(
+                      (opt) => opt && stripMarkers(opt as string).includes(kw)
+                    );
                     if (!matchTeks && !matchOpsi) return false;
                   }
 
@@ -3588,12 +3723,17 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
                     }
                   });
 
-                  // Convert to array and sort by Mapel Name then Class Name
-                  return Object.values(groups).sort((a, b) => {
-                    const mComp = a.mapelNama.localeCompare(b.mapelNama);
-                    if (mComp !== 0) return mComp;
-                    return a.kelasNama.localeCompare(b.kelasNama);
-                  });
+                  // Convert to array, sort each group's questions in Word order, and sort groups by Mapel Name then Class Name
+                  return Object.values(groups)
+                    .map((g) => ({
+                      ...g,
+                      soalList: sortSoalByWordOrder(g.soalList),
+                    }))
+                    .sort((a, b) => {
+                      const mComp = a.mapelNama.localeCompare(b.mapelNama);
+                      if (mComp !== 0) return mComp;
+                      return a.kelasNama.localeCompare(b.kelasNama);
+                    });
                 })();
 
                 return (
@@ -6487,7 +6627,7 @@ export default function AdminPortal({ onLogout, adminEmail }: AdminPortalProps) 
         const mat = dbState.mapel.find((m) => m.id === jag.mapelId);
 
         const targetAcadClassIds = normalizeSoalKelasIds(jag.kelasIds, dbState.kelasAkademik);
-        const mapelQuestions = dbState.soal.filter((s) => s.mapelId === jag.mapelId);
+        const mapelQuestions = sortSoalByWordOrder(dbState.soal.filter((s) => s.mapelId === jag.mapelId));
 
         const activeJadwalQuestions = filterQuestionsForJadwal(jag, dbState.soal, dbState.kelasAkademik);
         const activeJadwalIdSet = new Set(activeJadwalQuestions.map((q) => q.id));

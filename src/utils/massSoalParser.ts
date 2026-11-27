@@ -65,9 +65,11 @@ const ARABIC_OPT_TO_LATIN: Record<string, OpsiKey> = {
   و: "E",
 };
 
-// Strip Unicode directional controls & zero-width spaces ONLY for structural prefix inspection
+// Strip Unicode directional controls, zero-width spaces, and formatting markers ONLY for structural prefix inspection
 function stripBidiControls(str: string): string {
-  return str.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C]/g, "");
+  return str
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u061C]/g, "")
+    .replace(/\[\[\/?U\]\]|<\/?u>/gi, "");
 }
 
 function normalizeDigits(str: string): string {
@@ -106,7 +108,7 @@ interface OptionLineMatch {
 
 function matchSingleOptionPrefix(rawLine: string): OptionLineMatch | null {
   const line = stripBidiControls(rawLine).trimStart();
-  if (!line) return null;
+  if (!line || line.startsWith("[[TABLE]]")) return null;
 
   // Star/asterisk marking answer key: "*A. ...", "**A.** ...", "A*. ..."
   const starLatin = line.match(
@@ -195,7 +197,7 @@ function splitInlineMultiOptions(line: string): string[] {
 // Match question start ONLY at line beginning
 function matchQuestionStart(rawLine: string): { num: number | null; rest: string; isExplicitSeparator: boolean } | null {
   const clean = stripBidiControls(rawLine).trimStart();
-  if (!clean) return null;
+  if (!clean || clean.startsWith("[[TABLE]]")) return null;
 
   // Explicit separators: === or --- or [Soal] or [Soal 1]
   if (/^={3,}/.test(clean) || /^-{4,}/.test(clean) || /^\[Soal(?:\s*\d+)?\]/i.test(clean)) {
@@ -549,13 +551,15 @@ export function buildSoalObjectsFromParsed(
   const prefix = params.idPrefix || "soal_mass_";
   const now = Date.now();
   return items.map((item, idx) => {
+    const paddedIdx = String(idx).padStart(4, "0");
     const soal: Soal = {
-      id: `${prefix}${now}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+      id: `${prefix}${now}_${paddedIdx}_${Math.random().toString(36).slice(2, 7)}`,
       mapelId: params.mapelId,
       teks: item.teks,
       opsi: { ...item.opsi },
       kunci: item.kunci,
       kelasIds: [...(params.kelasIds || [])],
+      urutan: idx + 1,
     };
     if (params.guruId) soal.guruId = params.guruId;
     if (item.gambarUrl) soal.gambarUrl = item.gambarUrl;

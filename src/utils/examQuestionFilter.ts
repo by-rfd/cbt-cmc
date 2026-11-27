@@ -88,6 +88,53 @@ export function isQuestionClassMatchForSchedule(
   return false;
 }
 
+function parseSoalOrderMeta(soal: Soal): {
+  batchTs: number | null;
+  batchIdx: number | null;
+  urutan: number | null;
+  fallbackNum: number | null;
+} {
+  const idStr = soal.id || "";
+  // Matches e.g. soal_guru_1732650000000_0005_abc, soal_admin1732650000000_0005_abc, or single soal_guru_1732650000000
+  const m = idStr.match(/(1\d{12})(?:_(\d+))?/);
+  const batchTs = m ? parseInt(m[1], 10) : null;
+  const batchIdx = m && m[2] !== undefined ? parseInt(m[2], 10) : null;
+  const urutan = typeof soal.urutan === "number" && Number.isFinite(soal.urutan) ? soal.urutan : null;
+  const tailNumMatch = idStr.match(/(\d+)$/);
+  const fallbackNum = !batchTs && tailNumMatch ? parseInt(tailNumMatch[1], 10) : null;
+  return { batchTs, batchIdx, urutan, fallbackNum };
+}
+
+/**
+ * Sort questions deterministically according to Word upload batch & sequence order.
+ */
+export function sortSoalByWordOrder(soalList: Soal[]): Soal[] {
+  return [...soalList].sort((a, b) => {
+    const ma = parseSoalOrderMeta(a);
+    const mb = parseSoalOrderMeta(b);
+
+    if (ma.batchTs !== null && mb.batchTs !== null) {
+      if (ma.batchTs !== mb.batchTs) return ma.batchTs - mb.batchTs;
+      const ordA = ma.urutan ?? ma.batchIdx ?? 0;
+      const ordB = mb.urutan ?? mb.batchIdx ?? 0;
+      if (ordA !== ordB) return ordA - ordB;
+    }
+
+    if (ma.batchTs === null && mb.batchTs !== null) return -1;
+    if (ma.batchTs !== null && mb.batchTs === null) return 1;
+
+    if (ma.urutan !== null && mb.urutan !== null && ma.urutan !== mb.urutan) {
+      return ma.urutan - mb.urutan;
+    }
+
+    if (ma.fallbackNum !== null && mb.fallbackNum !== null && ma.fallbackNum !== mb.fallbackNum) {
+      return ma.fallbackNum - mb.fallbackNum;
+    }
+
+    return (a.id || "").localeCompare(b.id || "");
+  });
+}
+
 export function filterQuestionsForJadwal(
   jad: JadwalUjian,
   allSoal: Soal[],
@@ -98,7 +145,7 @@ export function filterQuestionsForJadwal(
     ignoreManualSoalIds?: boolean;
   }
 ): Soal[] {
-  const mapelSoal = allSoal.filter((s) => s.mapelId === jad.mapelId);
+  const mapelSoal = sortSoalByWordOrder(allSoal.filter((s) => s.mapelId === jad.mapelId));
 
   // Explicit manual selection override
   if (!options?.ignoreManualSoalIds && jad.soalIds && jad.soalIds.length > 0) {

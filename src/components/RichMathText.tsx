@@ -30,6 +30,7 @@ export function hasArabicText(text: string): boolean {
  */
 export function getLineDirection(line: string): "rtl" | "ltr" {
   const cleaned = (line || "")
+    .replace(/\[\[\/?(?:U|TABLE|ROW|CELL|BR)\]\]|<\/?u>/gi, " ")
     .replace(MATH_STRIP_REGEX, " ")
     // Strip leading question/option prefixes such as "1.", "(1)", "١.", "A.", "أ."
     .replace(/^\s*(?:\(?[0-9\u0660-\u0669A-Za-z\u0621-\u064A]\s*[.)\]:-]\s*)+/, "")
@@ -286,60 +287,192 @@ function renderKatexSpan(latex: string, displayMode: boolean, key: React.Key) {
   }
 }
 
+function renderLinePartsWithUnderline(
+  parts: Segment[],
+  lineDir: "rtl" | "ltr",
+  pIdx: number
+): React.ReactNode {
+  let underlined = false;
+  const out: React.ReactNode[] = [];
+  let nodeCounter = 0;
+
+  for (let sIdx = 0; sIdx < parts.length; sIdx++) {
+    const seg = parts[sIdx];
+    if (seg.type === "inline-math") {
+      const katexNode = renderKatexSpan(seg.content, false, `im-${pIdx}-${sIdx}`);
+      out.push(
+        underlined ? (
+          <span key={`um-${pIdx}-${nodeCounter++}`} className="underline decoration-[1.6px] underline-offset-4">
+            {katexNode}
+          </span>
+        ) : (
+          katexNode
+        )
+      );
+      continue;
+    }
+
+    const tokens = seg.content.split(/(\[\[U\]\]|\[\[\/U\]\]|<u>|<\/u>)/gi);
+    for (const tok of tokens) {
+      if (!tok) continue;
+      const lower = tok.toLowerCase();
+      if (lower === "[[u]]" || lower === "<u>") {
+        underlined = true;
+        continue;
+      }
+      if (lower === "[[/u]]" || lower === "</u>") {
+        underlined = false;
+        continue;
+      }
+      const rendered = renderInlineBidiText(tok, lineDir);
+      out.push(
+        underlined ? (
+          <span
+            key={`ut-${pIdx}-${nodeCounter++}`}
+            className="underline decoration-[1.6px] underline-offset-4"
+          >
+            {rendered}
+          </span>
+        ) : (
+          <React.Fragment key={`pt-${pIdx}-${nodeCounter++}`}>{rendered}</React.Fragment>
+        )
+      );
+    }
+  }
+
+  return out;
+}
+
+function renderStructuredTable(rawTableBlock: string, keyPrefix: string) {
+  const inner = rawTableBlock
+    .replace(/^\[\[TABLE\]\]/i, "")
+    .replace(/\[\[\/TABLE\]\]$/i, "");
+  const rows = inner
+    .split("[[ROW]]")
+    .map((r) => r.split("[[CELL]]").map((c) => c.replace(/\[\[BR\]\]/g, "\n").trim()))
+    .filter((cells) => cells.some((c) => c.length > 0));
+
+  if (rows.length === 0) return null;
+
+  const maxCols = rows.reduce((mx, r) => Math.max(mx, r.length), 0);
+  const combinedText = rows.flat().join(" ");
+  const tableRtl = isArabicDominant(combinedText);
+
+  return (
+    <div key={keyPrefix} className="my-2 w-full overflow-x-auto rounded-xl border border-slate-300 bg-white shadow-2xs">
+      <table
+        dir={tableRtl ? "rtl" : "ltr"}
+        className="w-full border-collapse text-[11.5px] font-medium text-slate-800"
+      >
+        <tbody>
+          {rows.map((cells, rIdx) => {
+            const isHeader = rIdx === 0 && rows.length > 1;
+            return (
+              <tr
+                key={`${keyPrefix}-r-${rIdx}`}
+                className={
+                  isHeader
+                    ? "bg-slate-100 font-extrabold text-slate-800 border-b border-slate-300"
+                    : rIdx % 2 === 1
+                    ? "bg-white border-b border-slate-200 last:border-b-0"
+                    : "bg-slate-50/50 border-b border-slate-200 last:border-b-0"
+                }
+              >
+                {Array.from({ length: maxCols }).map((_, cIdx) => {
+                  const cellVal = cells[cIdx] || "";
+                  const cellRtl = cellVal ? isArabicDominant(cellVal) : tableRtl;
+                  return (
+                    <td
+                      key={`${keyPrefix}-c-${rIdx}-${cIdx}`}
+                      className={`px-2.5 py-1.5 align-top border-slate-200 border-r last:border-r-0 ${
+                        cellRtl ? "text-right" : "text-left"
+                      }`}
+                    >
+                      {cellVal ? <RichMathText text={cellVal} /> : <span>&nbsp;</span>}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function RichMathText({ text, className = "" }: RichMathTextProps) {
   const sanitizedText = React.useMemo(
     () => (text || "").replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069\u061C]/g, ""),
     [text]
   );
 
-  const paragraphs = React.useMemo(() => {
-    if (!sanitizedText) return [];
-    return buildParagraphs(tokenizeMathSegments(sanitizedText));
+  // Split out [[TABLE]]...[[/TABLE]] blocks cleanly before math/line tokenization
+  const blocks = React.useMemo(() => {
+    if (!sanitizedText) return [] as Array<{ kind: "table" | "text"; content: string }>;
+    const out: Array<{ kind: "table" | "text"; content: string }> = [];
+    const tableRe = /\[\[TABLE\]\][\s\S]*?\[\[\/TABLE\]\]/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = tableRe.exec(sanitizedText)) !== null) {
+      if (m.index > last) {
+        const before = sanitizedText.slice(last, m.index).replace(/^\n+|\n+$/g, "");
+        if (before) out.push({ kind: "text", content: before });
+      }
+      out.push({ kind: "table", content: m[0] });
+      last = tableRe.lastIndex;
+    }
+    if (last < sanitizedText.length) {
+      const rest = sanitizedText.slice(last).replace(/^\n+|\n+$/g, "");
+      if (rest) out.push({ kind: "text", content: rest });
+    }
+    if (out.length === 0 && sanitizedText.trim()) {
+      out.push({ kind: "text", content: sanitizedText });
+    }
+    return out;
   }, [sanitizedText]);
 
   if (!sanitizedText) return null;
 
   return (
     <div className={`w-full space-y-1 ${className}`}>
-      {paragraphs.map((para, pIdx) => {
-        if (para.kind === "display-math") {
-          return renderKatexSpan(para.content, true, `dm-${pIdx}`);
+      {blocks.map((blk, bIdx) => {
+        if (blk.kind === "table") {
+          return renderStructuredTable(blk.content, `tbl-${bIdx}`);
         }
 
-        const plainLineText = para.parts
-          .map((p) => (p.type === "text" ? p.content : ""))
-          .join("");
+        const paragraphs = buildParagraphs(tokenizeMathSegments(blk.content));
+        return paragraphs.map((para, pIdx) => {
+          if (para.kind === "display-math") {
+            return renderKatexSpan(para.content, true, `dm-${bIdx}-${pIdx}`);
+          }
 
-        if (!plainLineText.trim() && para.parts.every((p) => p.type === "text")) {
-          return <div key={`sp-${pIdx}`} className="h-1.5" aria-hidden="true" />;
-        }
+          const plainLineText = para.parts
+            .map((p) => (p.type === "text" ? p.content : ""))
+            .join("");
 
-        const lineDir = getLineDirection(plainLineText);
-        const isRtl = lineDir === "rtl";
+          if (!plainLineText.trim() && para.parts.every((p) => p.type === "text")) {
+            return <div key={`sp-${bIdx}-${pIdx}`} className="h-1.5" aria-hidden="true" />;
+          }
 
-        return (
-          <div
-            key={`ln-${pIdx}`}
-            dir={lineDir}
-            style={{ unicodeBidi: "isolate" }}
-            className={
-              isRtl
-                ? "font-arabic text-right w-full text-[1.18em] leading-[2.05]"
-                : "text-left w-full leading-relaxed"
-            }
-          >
-            {para.parts.map((seg, sIdx) => {
-              if (seg.type === "text") {
-                return (
-                  <React.Fragment key={`t-${pIdx}-${sIdx}`}>
-                    {renderInlineBidiText(seg.content, lineDir)}
-                  </React.Fragment>
-                );
+          const lineDir = getLineDirection(plainLineText);
+          const isRtl = lineDir === "rtl";
+
+          return (
+            <div
+              key={`ln-${bIdx}-${pIdx}`}
+              dir={lineDir}
+              style={{ unicodeBidi: "isolate" }}
+              className={
+                isRtl
+                  ? "font-arabic text-right w-full text-[1.18em] leading-[2.05]"
+                  : "text-left w-full leading-relaxed"
               }
-              return renderKatexSpan(seg.content, false, `im-${pIdx}-${sIdx}`);
-            })}
-          </div>
-        );
+            >
+              {renderLinePartsWithUnderline(para.parts, lineDir, pIdx)}
+            </div>
+          );
+        });
       })}
     </div>
   );

@@ -200,6 +200,7 @@ async function fetchAllRows(client: SupabaseClient, table: string): Promise<Arra
     const { data, error } = await client
       .from(table)
       .select("id, payload")
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
 
     if (error) {

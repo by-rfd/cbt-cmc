@@ -50,6 +50,7 @@ import RichMathText, {
   hasArabicText,
   isArabicDominant,
 } from "./RichMathText";
+import { sortSoalByWordOrder } from "../utils/examQuestionFilter";
 
 interface GuruPortalProps {
   onLogout: () => void;
@@ -1634,8 +1635,10 @@ export default function GuruPortal({ onLogout, guruUser }: GuruPortalProps) {
                   {(() => {
                     const filteredGuruSoals = guruSoals.filter((soal) => {
                       if (guruFilterMapel && soal.mapelId !== guruFilterMapel) return false;
-                      if (guruSearchSoal && !soal.teks.toLowerCase().includes(guruSearchSoal.toLowerCase())) {
-                        return false;
+                      if (guruSearchSoal) {
+                        const kw = guruSearchSoal.toLowerCase();
+                        const plainTeks = (soal.teks || "").replace(/\[\[\/?(?:U|TABLE|ROW|CELL|BR)\]\]|<\/?u>/gi, " ").toLowerCase();
+                        if (!plainTeks.includes(kw)) return false;
                       }
                       if (guruFilterKelas) {
                         const normIds = normalizeSoalKelasIds(soal.kelasIds);
@@ -1705,11 +1708,16 @@ export default function GuruPortal({ onLogout, guruUser }: GuruPortalProps) {
                       groupsRecord[key].soalList.push(soal);
                     });
 
-                    const guruGroupedList = Object.values(groupsRecord).sort((a, b) => {
-                      const mComp = a.mapelNama.localeCompare(b.mapelNama);
-                      if (mComp !== 0) return mComp;
-                      return a.kelasLabel.localeCompare(b.kelasLabel);
-                    });
+                    const guruGroupedList = Object.values(groupsRecord)
+                      .map((g) => ({
+                        ...g,
+                        soalList: sortSoalByWordOrder(g.soalList),
+                      }))
+                      .sort((a, b) => {
+                        const mComp = a.mapelNama.localeCompare(b.mapelNama);
+                        if (mComp !== 0) return mComp;
+                        return a.kelasLabel.localeCompare(b.kelasLabel);
+                      });
 
                     return (
                       <div className="space-y-3 max-h-[650px] overflow-y-auto pr-1">

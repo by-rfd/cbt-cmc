@@ -444,6 +444,9 @@ export async function parseDocxSoalFile(file: File): Promise<DocxParseOutput> {
         const rPr = getFirstChildByLocalName(el, "rPr");
         const vertAlignEl = rPr ? getFirstChildByLocalName(rPr, "vertAlign") : null;
         const vertAlign = vertAlignEl ? getAttr(vertAlignEl, "val") : "";
+        const uEl = rPr ? getFirstChildByLocalName(rPr, "u") : null;
+        const uVal = uEl ? (getAttr(uEl, "val") || "single") : "";
+        const isUnderlined = Boolean(uEl && uVal && uVal !== "none");
 
         let runText = "";
         for (let i = 0; i < el.childNodes.length; i++) {
@@ -462,13 +465,16 @@ export async function parseDocxSoalFile(file: File): Promise<DocxParseOutput> {
         }
 
         if (runText) {
+          let formatted = runText;
           if (vertAlign === "superscript") {
-            lineAcc += `$^{${runText}}$`;
+            formatted = `$^{${runText}}$`;
           } else if (vertAlign === "subscript") {
-            lineAcc += `$_{${runText}}$`;
-          } else {
-            lineAcc += runText;
+            formatted = `$_{${runText}}$`;
           }
+          if (isUnderlined) {
+            formatted = `[[U]]${formatted}[[/U]]`;
+          }
+          lineAcc += formatted;
         }
         return;
       }
@@ -521,13 +527,214 @@ export async function parseDocxSoalFile(file: File): Promise<DocxParseOutput> {
       }
     }
 
+    // Merge adjacent underlined runs cleanly and tidy whitespace boundaries
+    lineAcc = lineAcc
+      .replace(/\[\[\/U\]\]\[\[U\]\]/g, "")
+      .replace(/\[\[U\]\](\s+)\[\[\/U\]\]/g, "$1")
+      .replace(/\[\[U\]\](\s+)/g, "$1[[U]]")
+      .replace(/(\s+)\[\[\/U\]\]/g, "[[/U]]$1")
+      .replace(/\[\[U\]\]\[\[\/U\]\]/g, "");
+
     const cleaned = lineAcc.replace(/[ ]{2,}/g, " ").trim();
     if (!cleaned) return "";
     // Avoid doubling prefix if teacher already typed "1." or "A." manually alongside Word numbering
-    if (prefix && /^(?:\d+[\.\)]|[A-E][\.\)]|[أبجدهـ][\.\)])/i.test(cleaned)) {
+    const prefixCheck = cleaned.replace(/\[\[\/?U\]\]/g, "");
+    if (prefix && /^(?:\d+[\.\)]|[0-9\u0660-\u0669]+[\.\)]|[A-E][\.\)]|[أبجدهـ][\.\)])/i.test(prefixCheck)) {
       return cleaned;
     }
     return `${prefix}${cleaned}`.trim();
+  };
+
+  const normalizeArabicDigits = (s: string) =>
+    s.replace(/[٠-٩]/g, (d) => String("٠١٢٣٤٥٦٧٨٩".indexOf(d)));
+
+  const serializeStimulusTable = (tblEl: Element): { tableToken: string; extraImages: string[] } => {
+    const trNodes = getChildrenByLocalName(tblEl, "tr");
+    const serializedRows: string[] = [];
+    const extraImages: string[] = [];
+
+    for (const tr of trNodes) {
+      const tcNodes = getChildrenByLocalName(tr, "tc");
+      const rowCells: string[] = [];
+      for (const tc of tcNodes) {
+        const pLines: string[] = [];
+        for (let c = 0; c < tc.childNodes.length; c++) {
+          const ch = tc.childNodes[c];
+          if (ch.nodeType !== 1) continue;
+          const chEl = ch as Element;
+          if (chEl.localName === "p") {
+            const t = extractParagraphText(chEl, true);
+            if (t) {
+              const withoutImgs = t.replace(/\[\[IMG_TOKEN:(data:image\/[^\]]+|https?:\/\/[^\]]+)\]\]/g, (_m, url) => {
+                extraImages.push(`[[IMG_TOKEN:${url}]]`);
+                return "";
+              }).trim();
+              if (withoutImgs) pLines.push(withoutImgs);
+            }
+          }
+        }
+        rowCells.push(pLines.join("[[BR]]"));
+      }
+      if (rowCells.some((cell) => cell.trim().length > 0)) {
+        serializedRows.push(rowCells.join("[[CELL]]"));
+      }
+    }
+
+    if (serializedRows.length === 0) return { tableToken: "", extraImages };
+    return {
+      tableToken: `[[TABLE]]${serializedRows.join("[[ROW]]")}[[/TABLE]]`,
+      extraImages,
+    };
+  };
+
+  const extractTableRowsRaw = (tblEl: Element): string[][] => {
+    const rows = getChildrenByLocalName(tblEl, "tr");
+    const matrix: string[][] = [];
+    for (const tr of rows) {
+      const cells = getChildrenByLocalName(tr, "tc");
+      const rowTexts = cells.map((tc) => {
+        const pLines: string[] = [];
+        for (let c = 0; c < tc.childNodes.length; c++) {
+          const ch = tc.childNodes[c];
+          if (ch.nodeType !== 1) continue;
+          const chEl = ch as Element;
+          if (chEl.localName === "p") {
+            const t = extractParagraphText(chEl, true);
+            if (t) pLines.push(t);
+          } else if (chEl.localName === "tbl") {
+            const nested = serializeStimulusTable(chEl);
+            if (nested.tableToken) pLines.push(nested.tableToken);
+            nested.extraImages.forEach((img) => pLines.push(img));
+          }
+        }
+        return pLines.join("\n").trim();
+      });
+      if (rowTexts.some((t) => t.length > 0)) {
+        matrix.push(rowTexts);
+      }
+    }
+    return matrix;
+  };
+
+  const isOptionCellStrict = (text: string) => {
+    const clean = text.replace(/\[\[\/?U\]\]/g, "").trim();
+    return /^(?:[\(\[]?[A-E][\)\]]?[\.\)\:]|[أبجدهـ][\.\)\:])\s+/i.test(clean);
+  };
+
+  const isQuestionNumCell = (text: string) => {
+    const clean = normalizeArabicDigits(text.replace(/\[\[\/?U\]\]/g, "").trim());
+    return /^(?:(?:Soal|No)\.?\s*)?\d{1,3}[\.\)]?$/i.test(clean);
+  };
+
+  const extractTableLines = (tblEl: Element): string[] => {
+    const matrix = extractTableRowsRaw(tblEl);
+    if (matrix.length === 0) return [];
+
+    // Case 1: Single-cell layout frame holding question(s) or options
+    if (matrix.length === 1 && matrix[0].length === 1) {
+      const singleCell = matrix[0][0];
+      const hasOptionsOrNum =
+        /(?:^|\n)\s*(?:[\(\[]?[A-E][\)\]]?[\.\)\:]|[أبجدهـ][\.\)\:]|\d{1,3}[\.\)])\s+/m.test(
+          singleCell.replace(/\[\[\/?U\]\]/g, "")
+        );
+      if (hasOptionsOrNum) {
+        return [singleCell];
+      }
+    }
+
+    // Check header keywords in row 0
+    const row0Lower = matrix[0].map((c) => c.replace(/\[\[\/?U\]\]/g, "").trim().toLowerCase());
+    const hasQuestionHeader =
+      row0Lower.some((c) => /^(?:soal|pertanyaan|butir(\s*soal)?)$/.test(c)) ||
+      (row0Lower.some((c) => /^no\.?$/.test(c)) &&
+        row0Lower.some((c) => /(soal|pertanyaan|opsi|pilihan|kunci|jawaban)/.test(c)));
+
+    // Count option cells & numbered question rows
+    let optionCellCount = 0;
+    let rowsWithOptionInside = 0;
+    let numberedRowsWithQuestionShape = 0;
+    for (let r = 0; r < matrix.length; r++) {
+      const row = matrix[r];
+      let rowHasOpt = false;
+      for (const cell of row) {
+        if (isOptionCellStrict(cell) || /(?:^|\n)\s*(?:A|B|أ|ب)[\.\)\:]\s+/m.test(cell.replace(/\[\[\/?U\]\]/g, ""))) {
+          optionCellCount++;
+          rowHasOpt = true;
+        }
+      }
+      if (rowHasOpt) rowsWithOptionInside++;
+      if (row.length >= 2 && isQuestionNumCell(row[0])) {
+        const col1 = row[1].replace(/\[\[\/?U\]\]/g, "").trim();
+        if (rowHasOpt || row.length >= 5 || /[?؟]\s*$/.test(col1)) {
+          numberedRowsWithQuestionShape++;
+        }
+      }
+    }
+
+    // Case 2: Option-grid table (e.g., 2x2 table containing A. ... B. ... / C. ... D. ...)
+    if (!hasQuestionHeader && optionCellCount >= 2 && numberedRowsWithQuestionShape === 0) {
+      const lines: string[] = [];
+      for (const row of matrix) {
+        for (const cell of row) {
+          if (cell.trim()) lines.push(cell.trim());
+        }
+      }
+      return lines;
+    }
+
+    // Case 3: Question-Bank Layout Table (rows represent individual questions)
+    if (hasQuestionHeader || rowsWithOptionInside >= 2 || numberedRowsWithQuestionShape >= 2) {
+      const lines: string[] = [];
+      const startRow = hasQuestionHeader ? 1 : 0;
+      const optLetters: Array<"A" | "B" | "C" | "D" | "E"> = ["A", "B", "C", "D", "E"];
+
+      for (let r = startRow; r < matrix.length; r++) {
+        const row = matrix[r];
+        const nonEmpty = row.filter((c) => c.trim().length > 0);
+        if (nonEmpty.length === 0) continue;
+
+        const firstClean = normalizeArabicDigits(row[0].replace(/\[\[\/?U\]\]/g, "").trim());
+        if (row.length >= 2 && isQuestionNumCell(row[0])) {
+          const numMatch = firstClean.match(/\d{1,3}/);
+          const qNum = numMatch ? numMatch[0] : firstClean.replace(/[\.\)]$/, "");
+          const restFirst = row[1].trim();
+          const startsWithNum = /^\d{1,3}[\.\)]/.test(normalizeArabicDigits(restFirst.replace(/\[\[\/?U\]\]/g, "")));
+          lines.push(startsWithNum ? restFirst : `${qNum}. ${restFirst}`);
+
+          const tailCols = row.slice(2).map((c) => c.trim()).filter(Boolean);
+          // Check if tail columns are unprefixed options (A, B, C, D, [E], [Kunci])
+          const tailAlreadyPrefixed = tailCols.some((c) => isOptionCellStrict(c));
+          if (!tailAlreadyPrefixed && tailCols.length >= 2 && row.length >= 5) {
+            const lastCol = tailCols[tailCols.length - 1].replace(/\[\[\/?U\]\]/g, "").trim();
+            const hasTrailingKey =
+              tailCols.length >= 5 && /^[A-Eأبجدهـ]$/i.test(lastCol);
+            const optCols = hasTrailingKey ? tailCols.slice(0, -1) : tailCols;
+            optCols.forEach((optVal, idx) => {
+              if (idx < optLetters.length) {
+                lines.push(`${optLetters[idx]}. ${optVal}`);
+              }
+            });
+            if (hasTrailingKey) {
+              lines.push(`Kunci: ${lastCol.toUpperCase()}`);
+            }
+          } else {
+            for (const c of tailCols) {
+              lines.push(c);
+            }
+          }
+        } else {
+          lines.push(nonEmpty.join("\n"));
+        }
+      }
+      return lines;
+    }
+
+    // Case 4: Stimulus / Data Table inside a question or option (preserve columns & borders!)
+    const stim = serializeStimulusTable(tblEl);
+    const out: string[] = [];
+    if (stim.tableToken) out.push(stim.tableToken);
+    stim.extraImages.forEach((img) => out.push(img));
+    return out;
   };
 
   const outLines: string[] = [];
@@ -543,43 +750,8 @@ export async function parseDocxSoalFile(file: File): Promise<DocxParseOutput> {
         outLines.push(txt);
       }
     } else if (el.localName === "tbl") {
-      // Walk Word table rows cleanly:
-      // Case A: Header row like [No | Soal | Opsi A | ...] or vertical Q blocks per cell
-      const rows = getChildrenByLocalName(el, "tr");
-      for (const tr of rows) {
-        const cells = getChildrenByLocalName(tr, "tc");
-        const cellTexts = cells.map((tc) => {
-          const pLines: string[] = [];
-          for (let c = 0; c < tc.childNodes.length; c++) {
-            const ch = tc.childNodes[c];
-            if (ch.nodeType === 1 && (ch as Element).localName === "p") {
-              const t = extractParagraphText(ch as Element, true);
-              if (t) pLines.push(t);
-            }
-          }
-          return pLines.join("\n");
-        }).filter((t) => t.trim().length > 0);
-
-        if (cellTexts.length === 0) continue;
-
-        // If first cell is strictly a number ("1" or "1.") and second cell contains the question content:
-        const firstClean = cellTexts[0].trim();
-        if (cellTexts.length >= 2 && /^\d{1,3}[\.\)]?$/.test(firstClean)) {
-          const qNum = firstClean.replace(/[\.\)]$/, "");
-          const restFirst = cellTexts[1];
-          const startsWithNum = /^\d{1,3}[\.\)]/.test(restFirst);
-          outLines.push(startsWithNum ? restFirst : `${qNum}. ${restFirst}`);
-          for (let ci = 2; ci < cellTexts.length; ci++) {
-            outLines.push(cellTexts[ci]);
-          }
-        } else {
-          // Multi-cell option row (e.g. ["A.", "Option text + img"] or ["A. ...", "B. ..."])
-          const merged = cellTexts.every((c) => !c.includes("\n"))
-            ? cellTexts.join("   ")
-            : cellTexts.join("\n");
-          outLines.push(merged);
-        }
-      }
+      const tblLines = extractTableLines(el);
+      tblLines.forEach((l) => outLines.push(l));
     }
   }
 
